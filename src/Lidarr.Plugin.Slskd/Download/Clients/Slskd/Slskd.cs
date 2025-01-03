@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using FluentValidation.Results;
@@ -58,33 +57,17 @@ namespace NzbDrone.Core.Download.Clients.Slskd
         public override Task<string> Download(RemoteAlbum remoteAlbum, IIndexer indexer)
         {
             var release = remoteAlbum.Release;
-
-            int bitrate;
-
-            if (release.Codec == "FLAC")
-            {
-                bitrate = 9;
-            }
-            else if (release.Container == "320")
-            {
-                bitrate = 3;
-            }
-            else
-            {
-                bitrate = 1;
-            }
-
-            return Task.FromResult(_proxy.Download(release.DownloadUrl, bitrate, Settings));
+            return Task.FromResult(_proxy.Download(release.Origin, release.Source, release.DownloadUrl, Settings));
         }
 
         public override DownloadClientInfo GetStatus()
         {
-            var config = _proxy.GetSettings(Settings);
+            var config = _proxy.GetOptions(Settings);
 
             return new DownloadClientInfo
             {
-                IsLocalhost = Settings.Host == "127.0.0.1" || Settings.Host == "localhost",
-                OutputRootFolders = new List<OsPath> { _remotePathMappingService.RemapRemoteToLocal(Settings.Host, new OsPath(config.DownloadLocation)) }
+                IsLocalhost = Settings.Host is "127.0.0.1" or "localhost",
+                OutputRootFolders = new List<OsPath> { _remotePathMappingService.RemapRemoteToLocal(Settings.Host, new OsPath(config.Directories.Downloads)) }
             };
         }
 
@@ -95,36 +78,41 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
         private ValidationFailure TestSettings()
         {
-            var config = _proxy.GetSettings(Settings);
+            var config = _proxy.GetOptions(Settings);
 
-            if (!config.CreateAlbumFolder)
+            if (config is null)
             {
-                return new NzbDroneValidationFailure(string.Empty, "Slskd must have 'Create Album Folders' enabled")
+                return new NzbDroneValidationFailure(string.Empty, "Could not connect to Slskd")
                 {
                     InfoLink = HttpRequestBuilder.BuildBaseUrl(Settings.UseSsl, Settings.Host, Settings.Port, Settings.UrlBase),
-                    DetailedDescription = "Slskd must have 'Create Album Folders' enabled, otherwise Lidarr will not be able to import the downloads",
+                    DetailedDescription = "Could not connect to Slskd, please check your settings",
                 };
             }
 
-            if (!config.CreateSingleFolder)
+            // if (!config.CreateAlbumFolder)
+            // {
+            //     return new NzbDroneValidationFailure(string.Empty, "Slskd must have 'Create Album Folders' enabled")
+            //     {
+            //         InfoLink = HttpRequestBuilder.BuildBaseUrl(Settings.UseSsl, Settings.Host, Settings.Port, Settings.UrlBase),
+            //         DetailedDescription = "Slskd must have 'Create Album Folders' enabled, otherwise Lidarr will not be able to import the downloads",
+            //     };
+            // }
+            //
+            // if (!config.CreateSingleFolder)
+            // {
+            //     return new NzbDroneValidationFailure(string.Empty, "Slskd must have 'Create folder structure for singles' enabled")
+            //     {
+            //         InfoLink = HttpRequestBuilder.BuildBaseUrl(Settings.UseSsl, Settings.Host, Settings.Port, Settings.UrlBase),
+            //         DetailedDescription = "Slskd must have 'Create folder structure for singles' enabled, otherwise Lidarr will not be able to import single downloads",
+            //     };
+            // }
+            var connectivity = _proxy.TestConnectivity(Settings);
+            if (!connectivity)
             {
-                return new NzbDroneValidationFailure(string.Empty, "Slskd must have 'Create folder structure for singles' enabled")
+                return new NzbDroneValidationFailure(string.Empty, "Could not connect to Slskd")
                 {
                     InfoLink = HttpRequestBuilder.BuildBaseUrl(Settings.UseSsl, Settings.Host, Settings.Port, Settings.UrlBase),
-                    DetailedDescription = "Slskd must have 'Create folder structure for singles' enabled, otherwise Lidarr will not be able to import single downloads",
-                };
-            }
-
-            try
-            {
-                _proxy.Authenticate(Settings);
-            }
-            catch (DownloadClientException)
-            {
-                return new NzbDroneValidationFailure(string.Empty, "Could not login to Slskd. Invalid ARL?")
-                {
-                    InfoLink = HttpRequestBuilder.BuildBaseUrl(Settings.UseSsl, Settings.Host, Settings.Port, Settings.UrlBase),
-                    DetailedDescription = "Slskd requires a valid ARL to initiate downloads",
+                    DetailedDescription = "Could not connect to Slskd, please check your settings",
                 };
             }
 

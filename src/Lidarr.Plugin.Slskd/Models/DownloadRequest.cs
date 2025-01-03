@@ -1,0 +1,13 @@
+﻿using Newtonsoft.Json;
+
+namespace NzbDrone.Plugin.Slskd.Models
+{
+    public class DownloadRequest
+    {
+        [JsonProperty("filename")]
+        public string Filename { get; set; }
+
+        [JsonProperty("size")]
+        public int Size { get; set; }
+    }
+}

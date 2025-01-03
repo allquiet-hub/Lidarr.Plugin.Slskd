@@ -13,7 +13,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             RuleFor(c => c.Host).ValidHost();
             RuleFor(c => c.Port).InclusiveBetween(1, 65535);
             RuleFor(c => c.UrlBase).ValidUrlBase().When(c => c.UrlBase.IsNotNullOrWhiteSpace());
-            RuleFor(c => c.Arl).NotEmpty().Length(192);
+            RuleFor(c => c.ApiKey).NotEmpty();
         }
     }
 
@@ -21,26 +21,20 @@ namespace NzbDrone.Core.Download.Clients.Slskd
     {
         private static readonly SlskdSettingsValidator Validator = new SlskdSettingsValidator();
 
-        public SlskdSettings()
-        {
-            Host = "localhost";
-            Port = 6595;
-        }
-
         [FieldDefinition(0, Label = "Host", Type = FieldType.Textbox)]
-        public string Host { get; set; }
+        public string Host { get; set; } = "localhost";
 
         [FieldDefinition(1, Label = "Port", Type = FieldType.Textbox)]
-        public int Port { get; set; }
+        public int Port { get; set; } = 5030;
 
-        [FieldDefinition(2, Label = "Url Base", Type = FieldType.Textbox, Advanced = true, HelpText = "Adds a prefix to the nzbget url, e.g. http://[host]:[port]/[urlBase]/jsonrpc")]
+        [FieldDefinition(2, Label = "Url Base", Type = FieldType.Textbox, Advanced = true, HelpText = "Adds a prefix to the nzbget url, e.g. http://[host]:[port]/[urlBase]/api")]
         public string UrlBase { get; set; }
 
         [FieldDefinition(3, Label = "Use SSL", Type = FieldType.Checkbox)]
         public bool UseSsl { get; set; }
 
-        [FieldDefinition(4, Label = "Arl", Type = FieldType.Textbox)]
-        public string Arl { get; set; }
+        [FieldDefinition(4, Label = "API Key", Type = FieldType.Textbox, Privacy = PrivacyLevel.ApiKey)]
+        public string ApiKey { get; set; } = "";
 
         public NzbDroneValidationResult Validate()
         {

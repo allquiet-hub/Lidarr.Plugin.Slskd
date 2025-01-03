@@ -1,118 +1,207 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
+using System.Text;
+using Newtonsoft.Json;
+using NLog;
 using NzbDrone.Common.Http;
-using NzbDrone.Core.Download.Clients.Slskd;
 using NzbDrone.Core.Parser.Model;
+using NzbDrone.Core.ThingiProvider;
+using NzbDrone.Plugin.Slskd.Models;
 
 namespace NzbDrone.Core.Indexers.Slskd
 {
     public class SlskdParser : IParseIndexerResponse
     {
-        private static readonly int[] _bitrates = new[] { 1, 3, 9 };
+        private readonly ProviderDefinition _definition;
+        private readonly SlskdIndexerSettings _settings;
+        private readonly TimeSpan _rateLimit;
+        private readonly IHttpClient _httpClient;
+        private readonly Logger _logger;
 
-        public SlskdUser User { get; set; }
+        public SlskdParser(ProviderDefinition definition, SlskdIndexerSettings settings, TimeSpan rateLimit, IHttpClient httpClient, Logger logger)
+        {
+            _definition = definition;
+            _settings = settings;
+            _rateLimit = rateLimit;
+            _httpClient = httpClient;
+            _logger = logger;
+        }
 
-        public IList<ReleaseInfo> ParseResponse(IndexerResponse response)
+        public IList<ReleaseInfo> ParseResponse(IndexerResponse indexerResponse)
         {
             var torrentInfos = new List<ReleaseInfo>();
 
-            var jsonResponse = new HttpResponse<SlskdSearchResponse>(response.HttpResponse);
+            var jsonResponse = new HttpResponse<SearchResult>(indexerResponse.HttpResponse);
+            var searchRequest =
+                JsonConvert.DeserializeObject<SearchRequest>(indexerResponse.HttpRequest.ContentSummary);
+            var searchResult = jsonResponse.Resource;
+            var searchId = searchResult.Id;
 
-            foreach (var result in jsonResponse.Resource.Data)
+            // Wait for the search to complete
+            var isCompleted = false;
+            var stopwatch = Stopwatch.StartNew();
+            var timeout = searchRequest.SearchTimeout + 50000; // Wait an extra 2 seconds, the search should be complete
+            var request = RequestBuilder()
+                .Resource($"api/v0/searches/{searchId}")
+                .AddQueryParam("includeResponses", "false")
+                .Build();
+
+            while (!isCompleted && stopwatch.ElapsedMilliseconds < timeout)
             {
-                // MP3 128
-                torrentInfos.Add(ToReleaseInfo(result, 1));
-
-                // MP3 320
-                if (User.CanStreamHq)
+                searchResult = new HttpResponse<SearchResult>(_httpClient.Execute(request)).Resource;
+                if (searchResult == null)
                 {
-                    torrentInfos.Add(ToReleaseInfo(result, 3));
+                    throw new Exception("Failed to query the search result.", null);
                 }
 
-                // FLAC
-                if (User.CanStreamHq)
-                {
-                    torrentInfos.Add(ToReleaseInfo(result, 9));
-                }
+                isCompleted = searchResult.IsComplete;
+                Debug.WriteLine($"Search Status: {searchResult.State}; found {searchResult.ResponseCount} responses.");
             }
+
+            stopwatch.Stop();
+
+            // Ensure the search completed successfully
+            if (!isCompleted)
+            {
+                throw new TimeoutException("Search did not complete within the specified timeout.");
+            }
+
+            request = RequestBuilder()
+                .Resource($"api/v0/searches/{searchId}")
+                .AddQueryParam("includeResponses", "true")
+                .Build();
+            searchResult = new HttpResponse<SearchResult>(_httpClient.Execute(request)).Resource;
+            if (searchResult == null)
+            {
+                throw new Exception("Failed to query the search result.", null);
+            }
+
+            torrentInfos.AddRange(ToReleaseInfo(searchResult));
 
             // order by date
-            return
-                torrentInfos
-                    .OrderByDescending(o => o.Size)
-                    .ToArray();
+            return torrentInfos
+                .OrderByDescending(o => o.Size)
+                .ToArray();
         }
 
-        private static ReleaseInfo ToReleaseInfo(SlskdGwAlbum x, int bitrate)
+        private IList<ReleaseInfo> ToReleaseInfo(SearchResult searchResult)
         {
-            var publishDate = DateTime.UtcNow;
-            var year = 0;
-            if (DateTime.TryParse(x.DigitalReleaseDate, out var digitalReleaseDate))
+            // Valid audio file extensions (without the dot)
+            var validExtensions = new HashSet<string>
             {
-                publishDate = digitalReleaseDate;
-                year = publishDate.Year;
-            }
-            else if (DateTime.TryParse(x.PhysicalReleaseDate, out var physicalReleaseDate))
-            {
-                publishDate = physicalReleaseDate;
-                year = publishDate.Year;
-            }
-
-            var result = new ReleaseInfo
-            {
-                Guid = $"Slskd-{x.AlbumId}-{bitrate}",
-                Artist = x.ArtistName,
-                Album = x.AlbumTitle,
-                DownloadUrl = x.Link,
-                InfoUrl = x.Link,
-                PublishDate = publishDate,
-                DownloadProtocol = nameof(SlskdDownloadProtocol)
+                "flac", "alac", "wav", "ape", "ogg", "aac", "mp3", "wma"
             };
 
-            long actualBitrate;
-            string format;
-            switch (bitrate)
+            var releaseInfos = new List<ReleaseInfo>();
+
+            foreach (var response in searchResult.Responses)
             {
-                case 9:
-                    actualBitrate = 1000;
-                    result.Codec = "FLAC";
-                    result.Container = "Lossless";
-                    format = "FLAC";
-                    break;
-                case 3:
-                    actualBitrate = 320;
-                    result.Codec = "MP3";
-                    result.Container = "320";
-                    format = "MP3 320";
-                    break;
-                case 1:
-                    actualBitrate = 128;
-                    result.Codec = "MP3";
-                    result.Container = "128";
-                    format = "MP3 128";
-                    break;
-                default:
-                    throw new NotImplementedException();
+                var groupedFiles = response.Files
+                    .GroupBy(file => file.ParentPath);
+
+                foreach (var group in groupedFiles)
+                {
+                    var files = group.ToList();
+                    var isSingleFileInParentDirectory = files.Count == 1;
+
+                    // Ensure extensions are filled if missing
+                    foreach (var file in files)
+                    {
+                        if (!string.IsNullOrEmpty(file.Extension))
+                        {
+                            continue;
+                        }
+
+                        var lastDotIndex = file.Name.LastIndexOf('.');
+                        if (lastDotIndex >= 0)
+                        {
+                            file.Extension = file.Name[(lastDotIndex + 1) ..].ToLower();
+                        }
+                    }
+
+                    // Filter valid audio files
+                    var audioFiles = files
+                        .Where(file => !string.IsNullOrEmpty(file.Extension) && validExtensions.Contains(file.Extension))
+                        .ToList();
+
+                    // Skip if no valid audio files
+                    if (audioFiles.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    var firstFile = audioFiles.First();
+
+                    // Determine codec
+                    var codec = audioFiles.Select(f => f.Extension).Distinct().Count() == 1
+                        ? firstFile.Extension.ToUpper(System.Globalization.CultureInfo.InvariantCulture)
+                        : null;
+
+                    // Determine bit rate
+                    string bitRate = null;
+                    if (audioFiles.All(f => f.BitRate.HasValue && f.BitRate == firstFile.BitRate))
+                    {
+                        bitRate = $"{firstFile.BitRate}kbps";
+                    }
+
+                    // Determine sample rate and bit depth
+                    string sampleRateAndDepth = null;
+                    if (audioFiles.All(f => f.SampleRate.HasValue && f.BitDepth.HasValue))
+                    {
+                        var sampleRate = firstFile.SampleRate / 1000.0; // Convert Hz to kHz
+                        var bitDepth = firstFile.BitDepth;
+                        sampleRateAndDepth = $"{bitDepth}bit {sampleRate?.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)}kHz";
+                    }
+
+                    // Determine VBR/CBR
+                    string isVariableBitRate = null;
+                    if (audioFiles.All(f => f.IsVariableBitRate.HasValue && f.IsVariableBitRate.Value))
+                    {
+                        isVariableBitRate = "VBR";
+                    }
+                    else if (audioFiles.All(f => f.IsVariableBitRate.HasValue && !f.IsVariableBitRate.Value))
+                    {
+                        isVariableBitRate = "CBR";
+                    }
+
+                    // Build the title
+                    var titleBuilder = new StringBuilder(firstFile.ParentFolder.Replace('\\', ' ')).Append(' ');
+                    if (isSingleFileInParentDirectory)
+                    {
+                        titleBuilder.Append(firstFile.Name.Replace($".{firstFile.Extension}", "")).Append(' ');
+                    }
+
+                    titleBuilder.AppendJoin(' ', codec, bitRate, sampleRateAndDepth, isVariableBitRate);
+
+                    // Create ReleaseInfo object
+                    releaseInfos.Add(new ReleaseInfo
+                    {
+                        Guid = Guid.NewGuid().ToString(),
+                        Title = titleBuilder.ToString().Trim(),
+                        Album = firstFile.ParentFolder,
+                        DownloadUrl = isSingleFileInParentDirectory
+                            ? firstFile.FileName
+                            : firstFile.ParentPath,
+                        InfoUrl = $"{_settings.BaseUrl}searches/{searchResult.Id}",
+                        Size = files.Sum(f => f.Size),
+                        Source = response.Username,
+                        Origin = searchResult.Id,
+                        DownloadProtocol = nameof(SlskdDownloadProtocol)
+                    });
+                }
             }
 
-            // bitrate is in kbit/sec, 128 = 1024/8
-            result.Size = x.DurationInSeconds * actualBitrate * 128L;
-            result.Title = $"{x.ArtistName} - {x.AlbumTitle}";
+            return releaseInfos;
+        }
 
-            if (year > 0)
-            {
-                result.Title += $" ({year})";
-            }
-
-            if (x.Explicit)
-            {
-                result.Title += " [Explicit]";
-            }
-
-            result.Title += $" [{format}] [WEB]";
-
-            return result;
+        private HttpRequestBuilder RequestBuilder()
+        {
+            return new HttpRequestBuilder(_settings.BaseUrl)
+                .Accept(HttpAccept.Json)
+                .WithRateLimit(1)
+                .SetHeader("X-API-Key", _settings.ApiKey);
         }
     }
 }

@@ -15,10 +15,12 @@
       <ExcludeAssets>runtime</ExcludeAssets>
     </ProjectReference>
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FluentValidation" Version="9.5.4" />
+    <PackageReference Include="NLog" Version="5.3.4" />
+  </ItemGroup>
   <Target Name="ZipOutputPath" AfterTargets="Publish">
-    <ZipDirectory
-        SourceDirectory="$(PublishDir)"
-        DestinationFile="$(SolutionDir)\..\Lidarr.Plugin.Slskd.$(TargetFramework).zip" />
+    <ZipDirectory SourceDirectory="$(PublishDir)" DestinationFile="$(SolutionDir)\..\Lidarr.Plugin.Slskd.$(TargetFramework).zip" />
   </Target>
 
 

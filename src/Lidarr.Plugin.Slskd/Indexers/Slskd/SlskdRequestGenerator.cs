@@ -1,7 +1,9 @@
 using System.Collections.Generic;
+using Newtonsoft.Json;
 using NLog;
 using NzbDrone.Common.Http;
 using NzbDrone.Core.IndexerSearch.Definitions;
+using NzbDrone.Plugin.Slskd.Models;
 
 namespace NzbDrone.Core.Indexers.Slskd
 {
@@ -16,12 +18,8 @@ namespace NzbDrone.Core.Indexers.Slskd
         {
             var pageableRequests = new IndexerPageableRequestChain();
 
-            var url = $"{Settings.BaseUrl.TrimEnd('/')}/api/newReleases";
-
-            pageableRequests.Add(new[]
-            {
-                new IndexerRequest(url, HttpAccept.Json)
-            });
+            var requests = GetRequests("Silent Partner Chances", searchTimeout: 2);
+            pageableRequests.Add(requests);
 
             return pageableRequests;
         }
@@ -29,9 +27,10 @@ namespace NzbDrone.Core.Indexers.Slskd
         public IndexerPageableRequestChain GetSearchRequests(AlbumSearchCriteria searchCriteria)
         {
             var chain = new IndexerPageableRequestChain();
-
-            chain.AddTier(GetRequests($"artist:\"{searchCriteria.ArtistQuery}\" album:\"{searchCriteria.AlbumQuery}\""));
-            chain.AddTier(GetRequests($"{searchCriteria.ArtistQuery} {searchCriteria.AlbumQuery}"));
+            if (searchCriteria != null)
+            {
+                chain.AddTier(GetRequests($"{searchCriteria.ArtistQuery} {searchCriteria.AlbumQuery}", searchCriteria.Tracks?.Count));
+            }
 
             return chain;
         }
@@ -39,20 +38,52 @@ namespace NzbDrone.Core.Indexers.Slskd
         public IndexerPageableRequestChain GetSearchRequests(ArtistSearchCriteria searchCriteria)
         {
             var chain = new IndexerPageableRequestChain();
-
-            chain.AddTier(GetRequests($"artist:\"{searchCriteria.ArtistQuery}\""));
-            chain.AddTier(GetRequests(searchCriteria.ArtistQuery));
+            if (searchCriteria != null)
+            {
+                chain.AddTier(GetRequests(searchCriteria.ArtistQuery, searchCriteria.Tracks.Count));
+            }
 
             return chain;
         }
 
-        private IEnumerable<IndexerRequest> GetRequests(string searchParameters)
+        private IEnumerable<IndexerRequest> GetRequests(string searchParameters, int? numberOfTracks = null, int? searchTimeout = null)
         {
-            for (var page = 0; page < MAX_PAGES; page++)
+            if (numberOfTracks is null or 0)
             {
-                var url = $"{Settings.BaseUrl.TrimEnd('/')}/api/album-search?term={searchParameters}&nb={PAGE_SIZE}&start={page * PAGE_SIZE}";
-                yield return new IndexerRequest(url, HttpAccept.Json);
+                numberOfTracks = 1;
             }
+
+            var searchRequest = new SearchRequest(searchParameters, numberOfTracks);
+            if (searchTimeout == null)
+            {
+                //Seconds to milliseconds
+                searchRequest.SearchTimeout = Settings.SearchTimeout * 1000;
+            }
+            else
+            {
+                searchRequest.SearchTimeout = searchTimeout.Value * 1000;
+            }
+
+            //MB/s to B/s
+            searchRequest.MinimumPeerUploadSpeed = Settings.MinimumPeerUploadSpeed * 1024 * 1024;
+            var json = JsonConvert.SerializeObject(searchRequest);
+            var request = RequestBuilder()
+                .Resource($"api/v0/searches")
+                .Post()
+                .Build();
+
+            request.SetContent(json);
+            request.ContentSummary = json;
+            request.Headers.ContentType = "application/json";
+
+            yield return new IndexerRequest(request);
+        }
+
+        private HttpRequestBuilder RequestBuilder()
+        {
+            return new HttpRequestBuilder(Settings.BaseUrl)
+                .Accept(HttpAccept.Json)
+                .SetHeader("X-API-Key", Settings.ApiKey);
         }
     }
 }

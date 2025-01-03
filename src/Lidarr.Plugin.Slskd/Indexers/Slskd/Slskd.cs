@@ -17,7 +17,6 @@ namespace NzbDrone.Core.Indexers.Slskd
         public override int PageSize => 100;
         public override TimeSpan RateLimit => new TimeSpan(0);
 
-        private readonly ICached<SlskdUser> _userCache;
         private readonly ISlskdProxy _slskdProxy;
 
         public Slskd(ICacheManager cacheManager,
@@ -29,7 +28,6 @@ namespace NzbDrone.Core.Indexers.Slskd
             Logger logger)
             : base(httpClient, indexerStatusService, configService, parsingService, logger)
         {
-            _userCache = cacheManager.GetCache<SlskdUser>(typeof(SlskdProxy), "user");
             _slskdProxy = slskdProxy;
         }
 
@@ -44,12 +42,7 @@ namespace NzbDrone.Core.Indexers.Slskd
 
         public override IParseIndexerResponse GetParser()
         {
-            _slskdProxy.Authenticate(Settings);
-
-            return new SlskdParser()
-            {
-                User = _userCache.Find(Settings.BaseUrl)
-            };
+            return new SlskdParser(Definition, Settings, RateLimit, _httpClient, _logger);
         }
     }
 }
