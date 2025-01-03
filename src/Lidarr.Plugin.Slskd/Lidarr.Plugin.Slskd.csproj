@@ -6,18 +6,18 @@
     <RootNamespace>NzbDrone.Plugin.Slskd</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\Lidarr\src\NzbDrone.Core\Lidarr.Core.csproj">
-      <Private>false</Private>
-      <ExcludeAssets>runtime</ExcludeAssets>
-    </ProjectReference>
-    <ProjectReference Include="..\Lidarr\src\NzbDrone.Common\Lidarr.Common.csproj">
-      <Private>false</Private>
-      <ExcludeAssets>runtime</ExcludeAssets>
-    </ProjectReference>
-  </ItemGroup>
-  <ItemGroup>
     <PackageReference Include="FluentValidation" Version="9.5.4" />
     <PackageReference Include="NLog" Version="5.3.4" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Lidarr\src\NzbDrone.Common\Lidarr.Common.csproj">
+      <Private>False</Private>
+      <CopyLocalSatelliteAssemblies>False</CopyLocalSatelliteAssemblies>
+    </ProjectReference>
+    <ProjectReference Include="..\Lidarr\src\NzbDrone.Core\Lidarr.Core.csproj">
+      <Private>False</Private>
+      <CopyLocalSatelliteAssemblies>False</CopyLocalSatelliteAssemblies>
+    </ProjectReference>
   </ItemGroup>
   <Target Name="ZipOutputPath" AfterTargets="Publish">
     <ZipDirectory SourceDirectory="$(PublishDir)" DestinationFile="$(SolutionDir)\..\Lidarr.Plugin.Slskd.$(TargetFramework).zip" />

@@ -8,6 +8,6 @@ namespace NzbDrone.Plugin.Slskd.Models
         public string Filename { get; set; }
 
         [JsonProperty("size")]
-        public int Size { get; set; }
+        public long Size { get; set; }
     }
 }

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using Newtonsoft.Json;
 using NLog;
 using NzbDrone.Common.Http;
@@ -7,14 +8,14 @@ using NzbDrone.Plugin.Slskd.Models;
 
 namespace NzbDrone.Core.Indexers.Slskd
 {
-    public class SlskdRequestGenerator : IIndexerRequestGenerator
+    public sealed class SlskdRequestGenerator : IIndexerRequestGenerator
     {
         private const int PAGE_SIZE = 100;
         private const int MAX_PAGES = 30;
         public SlskdIndexerSettings Settings { get; set; }
         public Logger Logger { get; set; }
 
-        public virtual IndexerPageableRequestChain GetRecentRequests()
+        public IndexerPageableRequestChain GetRecentRequests()
         {
             var pageableRequests = new IndexerPageableRequestChain();
 
@@ -29,7 +30,9 @@ namespace NzbDrone.Core.Indexers.Slskd
             var chain = new IndexerPageableRequestChain();
             if (searchCriteria != null)
             {
-                chain.AddTier(GetRequests($"{searchCriteria.ArtistQuery} {searchCriteria.AlbumQuery}", searchCriteria.Tracks?.Count));
+                chain.AddTier(GetRequests($"{searchCriteria.ArtistQuery} {searchCriteria.AlbumQuery}", searchCriteria.Tracks?.Count, 5));
+                chain.AddTier(GetRequests($"{searchCriteria.ArtistQuery} {searchCriteria.AlbumQuery}", searchCriteria.Tracks?.Count, 20));
+                chain.AddTier(GetRequests($"{searchCriteria.ArtistQuery} {searchCriteria.AlbumQuery}", searchCriteria.Tracks?.Count, 60));
             }
 
             return chain;
@@ -38,11 +41,6 @@ namespace NzbDrone.Core.Indexers.Slskd
         public IndexerPageableRequestChain GetSearchRequests(ArtistSearchCriteria searchCriteria)
         {
             var chain = new IndexerPageableRequestChain();
-            if (searchCriteria != null)
-            {
-                chain.AddTier(GetRequests(searchCriteria.ArtistQuery, searchCriteria.Tracks.Count));
-            }
-
             return chain;
         }
 
@@ -53,37 +51,32 @@ namespace NzbDrone.Core.Indexers.Slskd
                 numberOfTracks = 1;
             }
 
-            var searchRequest = new SearchRequest(searchParameters, numberOfTracks);
-            if (searchTimeout == null)
+            var searchRequest = new SearchRequest(searchParameters, numberOfTracks)
             {
                 //Seconds to milliseconds
-                searchRequest.SearchTimeout = Settings.SearchTimeout * 1000;
-            }
-            else
-            {
-                searchRequest.SearchTimeout = searchTimeout.Value * 1000;
-            }
+                SearchTimeout = searchTimeout == null ? Settings.SearchTimeout * 1000 : searchTimeout.Value * 1000,
 
-            //MB/s to B/s
-            searchRequest.MinimumPeerUploadSpeed = Settings.MinimumPeerUploadSpeed * 1024 * 1024;
-            var json = JsonConvert.SerializeObject(searchRequest);
-            var request = RequestBuilder()
-                .Resource($"api/v0/searches")
-                .Post()
-                .Build();
+                //MB/s to B/s
+                MinimumPeerUploadSpeed = Settings.MinimumPeerUploadSpeed * 1024 * 1024
+            };
 
-            request.SetContent(json);
-            request.ContentSummary = json;
-            request.Headers.ContentType = "application/json";
-
+            var request = RequestBuilder("api/v0/searches", searchRequest);
             yield return new IndexerRequest(request);
         }
 
-        private HttpRequestBuilder RequestBuilder()
+        private HttpRequest RequestBuilder(string resource, SearchRequest searchRequest)
         {
-            return new HttpRequestBuilder(Settings.BaseUrl)
+            var request = new HttpRequestBuilder(Settings.BaseUrl)
+                .Resource(resource)
                 .Accept(HttpAccept.Json)
-                .SetHeader("X-API-Key", Settings.ApiKey);
+                .SetHeader("X-API-Key", Settings.ApiKey)
+                .Post()
+                .Build();
+            var json = JsonConvert.SerializeObject(searchRequest);
+            request.Headers.ContentType = "application/json";
+            request.SetContent(json);
+            request.ContentSummary = json;
+            return request;
         }
     }
 }

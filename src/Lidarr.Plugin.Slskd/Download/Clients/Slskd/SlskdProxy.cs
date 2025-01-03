@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Text;
 using Newtonsoft.Json;
 using NLog;
@@ -27,6 +28,11 @@ namespace NzbDrone.Core.Download.Clients.Slskd
         private readonly IHttpClient _httpClient;
         private readonly Logger _logger;
 
+        private static readonly HashSet<string> ValidAudioExtensions = new ()
+        {
+            "flac", "alac", "wav", "ape", "ogg", "aac", "mp3", "wma"
+        };
+
         public SlskdProxy(IHttpClient httpClient = null, Logger logger = null)
         {
             _httpClient = httpClient;
@@ -40,7 +46,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
         private bool IsConnectedLoggedIn(SlskdSettings settings)
         {
-            var request = BuildRequest(settings).Resource("/api/v0/application");
+            var request = BuildRequest(settings, 1).Resource("/api/v0/application");
             var response = ProcessRequest<Application>(request);
 
             return response.Server.IsConnected && response.Server.IsLoggedIn;
@@ -53,7 +59,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 return null;
             }
 
-            var request = BuildRequest(settings).Resource("/api/v0/options");
+            var request = BuildRequest(settings, 1).Resource("/api/v0/options");
             var response = ProcessRequest<SlskdOptions>(request);
 
             return response;
@@ -61,14 +67,8 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
         public List<DownloadClientItem> GetQueue(SlskdSettings settings)
         {
-            var downloadsRequest = BuildRequest(settings).Resource("/api/v0/transfers/downloads");
+            var downloadsRequest = BuildRequest(settings, 1).Resource("/api/v0/transfers/downloads");
             var downloadsQueues = ProcessRequest<List<DownloadsQueue>>(downloadsRequest);
-
-            // Valid audio file extensions (without the dot)
-            var validExtensions = new HashSet<string>
-            {
-                "flac", "alac", "wav", "ape", "ogg", "aac", "mp3", "wma"
-            };
 
             // Fetch completed downloads folder from options
             // GetOptions(settings).Directories.Downloads;
@@ -81,8 +81,24 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             {
                 foreach (var directory in queue.Directories)
                 {
-                    // Group currently downloading files by ParentFolder
+                    // Ensure extensions are filled if missing
+                    foreach (var file in directory.Files)
+                    {
+                        if (!string.IsNullOrEmpty(file.Extension))
+                        {
+                            continue;
+                        }
+
+                        var lastDotIndex = file.Name.LastIndexOf('.');
+                        if (lastDotIndex >= 0)
+                        {
+                            file.Extension = file.Name[(lastDotIndex + 1) ..].ToLower();
+                        }
+                    }
+
+                    // Group currently downloading files by SecondParentFolder
                     var groupedDownloadingFiles = directory.Files
+                        .Where(file => file.Extension != null && ValidAudioExtensions.Contains(file.Extension))
                         .GroupBy(file => file.ParentPath);
                     var currentlyDownloadingFile = directory.Files.First();
                     long remainingSize = 0;
@@ -92,21 +108,47 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                     {
                         remainingSize = group.Sum(file => file.BytesRemaining);
                         totalSize = group.Sum(file => file.Size);
-                        currentlyDownloadingFile = group
-                            .OrderBy(file => file.RequestedAt)
-                            .ThenBy(file => file.EnqueuedAt)
-                            .ThenBy(file => file.StartedAt)
-                            .ThenBy(file => file.EndedAt)
-                            .Last();
+
+// Group files by their transfer state
+                        var groupedByState = group.GroupBy(file => file.TransferState.State)
+                            .ToDictionary(g => g.Key, g => g.ToList());
+
+                        // Prioritize the downloading state (InProgress)
+                        if (groupedByState.TryGetValue(TransferStateEnum.InProgress, out var inProgressFiles))
+                        {
+                            // If there are any files in progress, select the most recent one based on your ordering rules
+                            currentlyDownloadingFile = inProgressFiles
+                                .OrderBy(file => file.RequestedAt)
+                                .ThenBy(file => file.EnqueuedAt)
+                                .ThenBy(file => file.StartedAt)
+                                .FirstOrDefault(); // No need for Last since InProgress is a priority
+                        }
+                        else if (groupedByState.TryGetValue(TransferStateEnum.Completed, out var completedFiles))
+                        {
+                            // If no files are in progress, select the most recently completed file
+                            currentlyDownloadingFile = completedFiles
+                                .OrderBy(file => file.RequestedAt)
+                                .ThenBy(file => file.EnqueuedAt)
+                                .ThenBy(file => file.StartedAt)
+                                .ThenBy(file => file.EndedAt)
+                                .LastOrDefault(); // Choose the most recent completed file
+                        }
+                        else
+                        {
+                            // If no InProgress or Completed files exist, handle fallback
+                            currentlyDownloadingFile = group
+                                .OrderBy(file => file.RequestedAt)
+                                .ThenBy(file => file.EnqueuedAt)
+                                .ThenBy(file => file.StartedAt)
+                                .ThenBy(file => file.EndedAt)
+                                .LastOrDefault();
+                        }
                     }
 
-                    var userDirectoryRequest = BuildRequest(settings)
-                        .Resource($"/api/v0/searches/{queue.Username}/directory")
-                        .AddFormParameter("directory", directory.Directory);
-                    var userDirectoryResult = ProcessRequest<UserDirectory>(userDirectoryRequest);
+                    var userDirectory = GetUserDirectory(queue.Username, directory.Directory, settings);
 
-                    // Group files by ParentFolder
-                    var groupedFiles = userDirectoryResult.Files
+                    // Group files by SecondParentFolder
+                    var groupedFiles = userDirectory.Files
                         .GroupBy(file => file.ParentPath);
 
                     foreach (var group in groupedFiles)
@@ -131,7 +173,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
                         // Filter valid audio files
                         var audioFiles = files
-                            .Where(file => !string.IsNullOrEmpty(file.Extension) && validExtensions.Contains(file.Extension))
+                            .Where(file => !string.IsNullOrEmpty(file.Extension) && ValidAudioExtensions.Contains(file.Extension))
                             .ToList();
 
                         // Skip if no valid audio files
@@ -154,7 +196,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                             bitRate = $"{firstFile.BitRate}kbps";
                         }
 
-                        // Determine sample rate and bit depth
+                        // Determine sample rate and bitDepth
                         string sampleRateAndDepth = null;
                         if (audioFiles.All(f => f.SampleRate.HasValue && f.BitDepth.HasValue))
                         {
@@ -175,23 +217,24 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                         }
 
                         // Build the title
-                        var titleBuilder = new StringBuilder(firstFile.ParentFolder.Replace('\\', ' ')).Append(' ');
+                        var titleBuilder = new StringBuilder((firstFile.SecondParentFolder ?? firstFile.FirstParentFolder).Replace('\\', ' ')).Append(' ');
                         if (isSingleFileInParentDirectory)
                         {
                             titleBuilder.Append(firstFile.Name.Replace($".{firstFile.Extension}", "")).Append(' ');
                         }
 
                         titleBuilder.AppendJoin(' ', codec, bitRate, sampleRateAndDepth, isVariableBitRate);
+                        var downloadId = Path.Combine(queue.Username, directory.Directory);
 
                         var downloadItem = new DownloadClientItem
                         {
-                            DownloadId = Guid.NewGuid().ToString(),
+                            DownloadId = downloadId,
                             Title = titleBuilder.ToString().Trim(), // Use the parent folder as the title
                             TotalSize = totalSize,
                             RemainingSize = remainingSize,
                             Status = GetItemStatus(currentlyDownloadingFile.TransferState), // Get status from the first file
-                            Message = $"Downloaded from {currentlyDownloadingFile.Username}", // Message based on the first file
-                            OutputPath = new OsPath(Path.Combine(completedDownloadsPath, currentlyDownloadingFile.ParentFolder)) // Completed downloads folder + parent folder
+                            Message = $"Downloaded from {queue.Username}", // Message based on the first file
+                            OutputPath = new OsPath(Path.Combine(completedDownloadsPath, directory.Files.First().FirstParentFolder)) // Completed downloads folder + parent folder
                         };
 
                         downloadItems.Add(downloadItem);
@@ -202,19 +245,81 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             return downloadItems;
         }
 
+        private UserDirectory GetUserDirectory(string username, string directory, SlskdSettings settings)
+        {
+            var userDirectory = new UserDirectoryRequest { DirectoryPath = directory };
+            var userDirectoryRequest = BuildRequest(settings, 1)
+                .Resource($"/api/v0/users/{username}/directory")
+                .Post()
+                .Build();
+            var json = JsonConvert.SerializeObject(userDirectory);
+            userDirectoryRequest.Headers.ContentType = "application/json";
+            userDirectoryRequest.SetContent(json);
+            userDirectoryRequest.ContentSummary = json;
+            UserDirectory userDirectoryResult = null;
+
+            try
+            {
+                userDirectoryResult = ProcessRequest<UserDirectory>(userDirectoryRequest);
+            }
+            catch (Exception)
+            {
+                throw new DownloadClientException("Error getting download information from client: {0}", userDirectoryResult);
+            }
+
+            foreach (var file in userDirectoryResult.Files)
+            {
+                file.FileName = Path.Combine(userDirectoryResult.DirectoryPath, file.FileName);
+            }
+
+            return userDirectoryResult;
+        }
+
         public void RemoveFromQueue(string downloadId, SlskdSettings settings)
         {
-            var request = BuildRequest(settings)
-                .Resource($"/api/v0/transfers/downloads/{downloadId}");
+            var split = downloadId.Split('\\');
+            var username = split[0];
+            var directoryPath = downloadId.Split('\\', 2)[1];
+            var directoryName = split[^1];
+            var downloadsRequest = BuildRequest(settings, 1).Resource($"/api/v0/transfers/downloads/{username}");
+            var downloadQueue = ProcessRequest<DownloadsQueue>(downloadsRequest);
+            var downloadDirectory = downloadQueue.Directories.FirstOrDefault(q => q.Directory.StartsWith(directoryPath));
 
-            ProcessRequest(request);
+            if (downloadDirectory == null || downloadDirectory.Files.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var directoryFile in downloadDirectory.Files)
+            {
+                var removeFileRequest = BuildRequest(settings, 0.01)
+                    .Resource($"/api/v0/transfers/downloads/{username}/{directoryFile.Id}")
+                    .AddQueryParam("remove", true)
+                    .Build();
+                removeFileRequest.Method = HttpMethod.Delete;
+                ProcessRequest(removeFileRequest);
+            }
+
+            var base64Directory = Base64Encode(directoryName);
+            var removeDirectoryRequest = BuildRequest(settings, 0.01)
+                .Resource($"/api/v0/files/downloads/directories/{base64Directory}")
+                .AddQueryParam("remove", true)
+                .Build();
+            removeDirectoryRequest.Method = HttpMethod.Delete;
+            ProcessRequest(removeDirectoryRequest);
+        }
+
+        private static string Base64Encode(string plainText)
+        {
+            var plainTextBytes = Encoding.UTF8.GetBytes(plainText);
+            return Convert.ToBase64String(plainTextBytes);
         }
 
         public string Download(string searchId, string username, string downloadPath, SlskdSettings settings)
         {
-            var downloadUid = $"{username}|{downloadPath}";
+            var downloadUid = Path.Combine(username, downloadPath);
 
-            var request = BuildRequest(settings)
+            var request = BuildRequest(settings, 1)
                 .Resource($"/api/v0/searches/{searchId}")
                 .AddQueryParam("includeResponses", true);
             var result = ProcessRequest<SearchResult>(request);
@@ -234,7 +339,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             var files = userResponse.Files.Where(f => f.FileName.StartsWith(downloadPath)).ToList();
 
             downloadList.AddRange(files.Select(file => new DownloadRequest { Filename = file.FileName, Size = file.Size }));
-            var downloadRequest = BuildRequest(settings)
+            var downloadRequest = BuildRequest(settings, 0.01)
                 .Resource($"/api/v0/transfers/downloads/{username}")
                 .Post()
                 .Build();
@@ -257,7 +362,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             return downloadUid;
         }
 
-        private static HttpRequestBuilder BuildRequest(SlskdSettings settings)
+        private static HttpRequestBuilder BuildRequest(SlskdSettings settings, double rateLimitSeconds)
         {
             var requestBuilder = new HttpRequestBuilder(settings.UseSsl, settings.Host, settings.Port, settings.UrlBase)
             {
@@ -267,6 +372,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             // Add API key header
             requestBuilder.Accept(HttpAccept.Json);
             requestBuilder.SetHeader("X-API-Key", settings.ApiKey);
+            requestBuilder.WithRateLimit(rateLimitSeconds);
 
             return requestBuilder;
         }
@@ -275,6 +381,13 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             where TResult : new()
         {
             var responseContent = ProcessRequest(requestBuilder);
+            return Json.Deserialize<TResult>(responseContent);
+        }
+
+        private TResult ProcessRequest<TResult>(HttpRequest httpRequest)
+            where TResult : new()
+        {
+            var responseContent = ProcessRequest(httpRequest);
             return Json.Deserialize<TResult>(responseContent);
         }
 
@@ -329,6 +442,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                             return DownloadItemStatus.Completed;
                         case TransferStateEnum.Cancelled:
                         case TransferStateEnum.Errored:
+                        case TransferStateEnum.Rejected:
                             return DownloadItemStatus.Warning;
                         default:
                             return DownloadItemStatus.Warning;
@@ -337,6 +451,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 case TransferStateEnum.Requested:
                 case TransferStateEnum.Queued:
                     return DownloadItemStatus.Queued;
+                case TransferStateEnum.Initializing:
                 case TransferStateEnum.InProgress:
                     return DownloadItemStatus.Downloading;
                 default:

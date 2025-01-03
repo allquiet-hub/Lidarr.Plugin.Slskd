@@ -167,20 +167,42 @@ namespace NzbDrone.Core.Indexers.Slskd
                     }
 
                     // Build the title
-                    var titleBuilder = new StringBuilder(firstFile.ParentFolder.Replace('\\', ' ')).Append(' ');
+                    var titleBuilderFirst = new StringBuilder(firstFile.FirstParentFolder.Replace('\\', ' ')).Append(' ');
                     if (isSingleFileInParentDirectory)
                     {
-                        titleBuilder.Append(firstFile.Name.Replace($".{firstFile.Extension}", "")).Append(' ');
+                        titleBuilderFirst.Append(firstFile.Name.Replace($".{firstFile.Extension}", "")).Append(' ');
                     }
 
-                    titleBuilder.AppendJoin(' ', codec, bitRate, sampleRateAndDepth, isVariableBitRate);
+                    titleBuilderFirst.AppendJoin(' ', codec, bitRate, sampleRateAndDepth, isVariableBitRate);
+
+                    var titleBuilderSecond = new StringBuilder(firstFile.SecondParentFolder.Replace('\\', ' ')).Append(' ');
+                    if (isSingleFileInParentDirectory)
+                    {
+                        titleBuilderSecond.Append(firstFile.Name.Replace($".{firstFile.Extension}", "")).Append(' ');
+                    }
+
+                    titleBuilderSecond.AppendJoin(' ', codec, bitRate, sampleRateAndDepth, isVariableBitRate);
 
                     // Create ReleaseInfo object
                     releaseInfos.Add(new ReleaseInfo
                     {
                         Guid = Guid.NewGuid().ToString(),
-                        Title = titleBuilder.ToString().Trim(),
-                        Album = firstFile.ParentFolder,
+                        Title = titleBuilderFirst.ToString().Trim(),
+                        Album = firstFile.FirstParentFolder,
+                        DownloadUrl = isSingleFileInParentDirectory
+                            ? firstFile.FileName
+                            : firstFile.ParentPath,
+                        InfoUrl = $"{_settings.BaseUrl}searches/{searchResult.Id}",
+                        Size = files.Sum(f => f.Size),
+                        Source = response.Username,
+                        Origin = searchResult.Id,
+                        DownloadProtocol = nameof(SlskdDownloadProtocol)
+                    });
+                    releaseInfos.Add(new ReleaseInfo
+                    {
+                        Guid = Guid.NewGuid().ToString(),
+                        Title = titleBuilderSecond.ToString().Trim(),
+                        Album = firstFile.SecondParentFolder,
                         DownloadUrl = isSingleFileInParentDirectory
                             ? firstFile.FileName
                             : firstFile.ParentPath,

@@ -4,6 +4,6 @@ namespace NzbDrone.Core.Plugins
     {
         public override string Name => "Slskd";
         public override string Owner => "allquiet-hub";
-        public override string GithubUrl => "https://github.com/ta264/Lidarr.Plugin.Slskd";
+        public override string GithubUrl => "https://github.com/allquiet-hub/Lidarr.Plugin.Slskd";
     }
 }

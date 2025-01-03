@@ -90,12 +90,15 @@ public class DirectoryFile
             // File name itself
             Name = parts[^1];
 
-            // Parent folder: Two levels above the file
-            ParentFolder = parts.Length > 2
-                ? string.Join("\\", parts[^3..^1]) // Two directories above the file
-                : parts.Length > 1
+            // Single Parent folder
+            FirstParentFolder = parts.Length > 1
                     ? parts[^2] // Single parent folder
                     : null;
+
+            // Parent folder: Two levels above the file
+            SecondParentFolder = parts.Length > 2
+                ? string.Join("\\", parts[^3..^1]) // Two directories above the file
+                : null;
 
             // Full path of the immediate parent directory
             ParentPath = parts.Length > 1
@@ -108,7 +111,10 @@ public class DirectoryFile
     public string Name { get; set; }
 
     [JsonIgnore]
-    public string ParentFolder { get; set; }
+    public string SecondParentFolder { get; set; }
+
+    [JsonIgnore]
+    public string FirstParentFolder { get; set; }
 
     [JsonIgnore]
     public string ParentPath { get; set; }
