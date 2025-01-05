@@ -71,8 +71,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             var downloadsQueues = ProcessRequest<List<DownloadsQueue>>(downloadsRequest);
 
             // Fetch completed downloads folder from options
-            // GetOptions(settings).Directories.Downloads;
-            var completedDownloadsPath = @"U:\downloads\slskd\complete";
+            var completedDownloadsPath = GetOptions(settings).Directories.Downloads;
 
             var downloadItems = new List<DownloadClientItem>();
 
