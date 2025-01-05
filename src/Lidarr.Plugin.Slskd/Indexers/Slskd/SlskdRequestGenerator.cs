@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Linq;
 using Newtonsoft.Json;
 using NLog;
 using NzbDrone.Common.Http;
@@ -10,9 +9,7 @@ namespace NzbDrone.Core.Indexers.Slskd
 {
     public sealed class SlskdRequestGenerator : IIndexerRequestGenerator
     {
-        private const int PAGE_SIZE = 100;
-        private const int MAX_PAGES = 30;
-        public SlskdIndexerSettings Settings { get; set; }
+        public SlskdIndexerSettings Settings { get; init; }
         public Logger Logger { get; set; }
 
         public IndexerPageableRequestChain GetRecentRequests()
@@ -30,9 +27,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             var chain = new IndexerPageableRequestChain();
             if (searchCriteria != null)
             {
-                chain.AddTier(GetRequests($"{searchCriteria.ArtistQuery} {searchCriteria.AlbumQuery}", searchCriteria.Tracks?.Count, 5));
-                chain.AddTier(GetRequests($"{searchCriteria.ArtistQuery} {searchCriteria.AlbumQuery}", searchCriteria.Tracks?.Count, 20));
-                chain.AddTier(GetRequests($"{searchCriteria.ArtistQuery} {searchCriteria.AlbumQuery}", searchCriteria.Tracks?.Count, 60));
+                chain.AddTier(GetRequests($"{searchCriteria.ArtistQuery} {searchCriteria.AlbumQuery}"));
             }
 
             return chain;
@@ -44,14 +39,9 @@ namespace NzbDrone.Core.Indexers.Slskd
             return chain;
         }
 
-        private IEnumerable<IndexerRequest> GetRequests(string searchParameters, int? numberOfTracks = null, int? searchTimeout = null)
+        private IEnumerable<IndexerRequest> GetRequests(string searchParameters, int? searchTimeout = null)
         {
-            if (numberOfTracks is null or 0)
-            {
-                numberOfTracks = 1;
-            }
-
-            var searchRequest = new SearchRequest(searchParameters, numberOfTracks)
+            var searchRequest = new SearchRequest(searchParameters)
             {
                 //Seconds to milliseconds
                 SearchTimeout = searchTimeout == null ? Settings.SearchTimeout * 1000 : searchTimeout.Value * 1000,

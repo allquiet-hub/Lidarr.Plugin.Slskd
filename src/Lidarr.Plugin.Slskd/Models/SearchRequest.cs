@@ -4,10 +4,9 @@ namespace NzbDrone.Plugin.Slskd.Models
 {
     public class SearchRequest
     {
-        public SearchRequest(string searchText, int? numberOfTracks)
+        public SearchRequest(string searchText)
         {
             SearchText = searchText;
-            MinimumResponseFileCount = numberOfTracks;
         }
 
         // Gets or sets the search text.
