@@ -73,7 +73,7 @@ jobs:
           body: >
             Lidarr plugin to add Slskd (Soulseek) support
 
-            Minimum Lidarr Version: ${{ env. }}
+            Minimum Lidarr Version: 2.9.0
           draft: true
           prerelease: true
           files: >
