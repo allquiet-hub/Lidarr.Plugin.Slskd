@@ -4,9 +4,10 @@ namespace NzbDrone.Plugin.Slskd.Models
 {
     public class SearchRequest
     {
-        public SearchRequest(string searchText)
+        public SearchRequest(string searchText, int? searchTimeout)
         {
             SearchText = searchText;
+            SearchTimeout = searchTimeout;
         }
 
         // Gets or sets the search text.
