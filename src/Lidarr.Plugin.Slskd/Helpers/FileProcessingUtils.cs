@@ -1,7 +1,8 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using NzbDrone.Plugin.Slskd.Interfaces;
+using System.Text;
 using NzbDrone.Plugin.Slskd.Models;
 
 namespace NzbDrone.Plugin.Slskd.Helpers;
@@ -9,7 +10,7 @@ namespace NzbDrone.Plugin.Slskd.Helpers;
 // Shared utility class for common logic
 public static class FileProcessingUtils
 {
-    private static readonly HashSet<string> ValidAudioExtensions = new HashSet<string>
+    public static readonly HashSet<string> ValidAudioExtensions = new HashSet<string>
     {
         "flac", "alac", "wav", "ape", "ogg", "aac", "mp3", "wma"
     };
@@ -78,5 +79,40 @@ public static class FileProcessingUtils
         }
 
         return null;
+    }
+
+    public static string BuildTitle<T>(List<T> files)
+        where T : SlskdFile
+    {
+        var codec = DetermineCodec(files);
+        var bitRate = DetermineBitRate(files);
+        var sampleRateAndDepth = DetermineSampleRateAndDepth(files);
+        var vbrOrCbr = DetermineVbr(files);
+        var isSingleFile = files?.Count == 1;
+        var firstFile = files?.First();
+
+        var titleBuilder = new StringBuilder();
+        var fileName = isSingleFile ? firstFile.Name.Replace($".{firstFile.Extension}", "", StringComparison.InvariantCulture) : null;
+        var parentFolder = (firstFile?.SecondParentFolder ?? firstFile?.FirstParentFolder)?.Replace('\\', ' ');
+
+        titleBuilder.AppendJoin(' ', parentFolder, fileName, codec, bitRate, sampleRateAndDepth, vbrOrCbr);
+        return titleBuilder.ToString().Trim();
+    }
+
+    private static void EnsureFileExtensions(IEnumerable<SlskdFile> files)
+    {
+        foreach (var file in files)
+        {
+            if (!string.IsNullOrEmpty(file.Extension))
+            {
+                continue;
+            }
+
+            var lastDotIndex = file.Name.LastIndexOf('.');
+            if (lastDotIndex >= 0)
+            {
+                file.Extension = file.Name[(lastDotIndex + 1) ..].ToLower();
+            }
+        }
     }
 }

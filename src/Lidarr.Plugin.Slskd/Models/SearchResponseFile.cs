@@ -1,6 +1,5 @@
 using System.Collections.Generic;
 using Newtonsoft.Json;
-using NzbDrone.Plugin.Slskd.Interfaces;
 
 namespace NzbDrone.Plugin.Slskd.Models;
 

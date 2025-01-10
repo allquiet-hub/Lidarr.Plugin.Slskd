@@ -41,11 +41,9 @@ namespace NzbDrone.Core.Indexers.Slskd
 
         private IEnumerable<IndexerRequest> GetRequests(string searchParameters, int? searchTimeout = null)
         {
-            var searchRequest = new SearchRequest(searchParameters)
+            searchTimeout = searchTimeout == null ? Settings.SearchTimeout * 1000 : searchTimeout.Value * 1000;
+            var searchRequest = new SearchRequest(searchParameters, searchTimeout)
             {
-                //Seconds to milliseconds
-                SearchTimeout = searchTimeout == null ? Settings.SearchTimeout * 1000 : searchTimeout.Value * 1000,
-
                 //MB/s to B/s
                 MinimumPeerUploadSpeed = Settings.MinimumPeerUploadSpeed * 1024 * 1024
             };

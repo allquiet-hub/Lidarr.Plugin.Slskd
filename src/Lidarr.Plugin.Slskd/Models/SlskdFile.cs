@@ -1,6 +1,6 @@
 ﻿using Newtonsoft.Json;
 
-namespace NzbDrone.Plugin.Slskd.Interfaces;
+namespace NzbDrone.Plugin.Slskd.Models;
 
 public class SlskdFile
 {

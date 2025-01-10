@@ -5,12 +5,23 @@
     <AssemblyName>Lidarr.Plugin.Slskd</AssemblyName>
     <RootNamespace>NzbDrone.Plugin.Slskd</RootNamespace>
   </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+    <OutputPath>C:\ProgramData\Lidarr\plugins\allquiet-hub\Lidarr.Plugin.Slskd\</OutputPath>
+  </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="FluentValidation" Version="9.5.4" />
     <PackageReference Include="NLog" Version="5.3.4" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\Lidarr\src\NzbDrone.Core\Lidarr.Core.csproj" />
+    <ProjectReference Include="..\Lidarr\src\NzbDrone.Core\Lidarr.Core.csproj">
+      <Private>False</Private>
+      <CopyLocalSatelliteAssemblies>False</CopyLocalSatelliteAssemblies>
+    </ProjectReference>
+    <ProjectReference Include="..\Lidarr\src\NzbDrone.Common\Lidarr.Common.csproj">
+      <Private>False</Private>
+      <CopyLocalSatelliteAssemblies>False</CopyLocalSatelliteAssemblies>
+    </ProjectReference>
   </ItemGroup>
   <Target Name="ZipOutputPath" AfterTargets="Publish">
     <ZipDirectory SourceDirectory="$(PublishDir)" DestinationFile="$(SolutionDir)\..\Lidarr.Plugin.Slskd.$(TargetFramework).zip" />

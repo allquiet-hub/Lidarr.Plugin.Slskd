@@ -10,6 +10,7 @@ using NLog;
 using NzbDrone.Common.Disk;
 using NzbDrone.Common.Http;
 using NzbDrone.Common.Serializer;
+using NzbDrone.Plugin.Slskd.Helpers;
 using NzbDrone.Plugin.Slskd.Models;
 
 namespace NzbDrone.Core.Download.Clients.Slskd
@@ -27,11 +28,6 @@ namespace NzbDrone.Core.Download.Clients.Slskd
     {
         private readonly IHttpClient _httpClient;
         private readonly Logger _logger;
-
-        private static readonly HashSet<string> ValidAudioExtensions = new ()
-        {
-            "flac", "alac", "wav", "ape", "ogg", "aac", "mp3", "wma"
-        };
 
         public SlskdProxy(IHttpClient httpClient = null, Logger logger = null)
         {
@@ -72,7 +68,6 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
             // Fetch completed downloads folder from options
             var completedDownloadsPath = GetOptions(settings).Directories.Downloads;
-
             var downloadItems = new List<DownloadClientItem>();
 
             // Transform grouped files into DownloadClientItem instances
@@ -81,167 +76,87 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 foreach (var directory in queue.Directories)
                 {
                     // Ensure extensions are filled if missing
-                    foreach (var file in directory.Files)
-                    {
-                        if (!string.IsNullOrEmpty(file.Extension))
-                        {
-                            continue;
-                        }
+                    FileProcessingUtils.EnsureFileExtensions(directory.Files);
 
-                        var lastDotIndex = file.Name.LastIndexOf('.');
-                        if (lastDotIndex >= 0)
-                        {
-                            file.Extension = file.Name[(lastDotIndex + 1) ..].ToLower();
-                        }
+                    // Filter valid audio files
+                    var audioFiles = directory.Files
+                        .Where(file =>
+                            !string.IsNullOrEmpty(file.Extension) &&
+                            FileProcessingUtils.ValidAudioExtensions.Contains(file.Extension))
+                        .ToList();
+
+                    // Skip if no valid audio files
+                    if (audioFiles.Count == 0)
+                    {
+                        continue;
                     }
 
-                    // Group currently downloading files by SecondParentFolder
-                    var groupedDownloadingFiles = directory.Files
-                        .Where(file => file.Extension != null && ValidAudioExtensions.Contains(file.Extension))
-                        .GroupBy(file => file.ParentPath);
-                    var currentlyDownloadingFile = directory.Files.First();
-                    long remainingSize = 0;
-                    long totalSize = 0;
-
-                    foreach (var group in groupedDownloadingFiles)
-                    {
-                        remainingSize = group.Sum(file => file.BytesRemaining);
-                        totalSize = group.Sum(file => file.Size);
-
-// Group files by their transfer state
-                        var groupedByState = group.GroupBy(file => file.TransferState.State)
-                            .ToDictionary(g => g.Key, g => g.ToList());
-
-                        // Prioritize the downloading state (InProgress)
-                        if (groupedByState.TryGetValue(TransferStateEnum.InProgress, out var inProgressFiles))
-                        {
-                            // If there are any files in progress, select the most recent one based on your ordering rules
-                            currentlyDownloadingFile = inProgressFiles
-                                .OrderBy(file => file.RequestedAt)
-                                .ThenBy(file => file.EnqueuedAt)
-                                .ThenBy(file => file.StartedAt)
-                                .FirstOrDefault(); // No need for Last since InProgress is a priority
-                        }
-                        else if (groupedByState.TryGetValue(TransferStateEnum.Completed, out var completedFiles))
-                        {
-                            // If no files are in progress, select the most recently completed file
-                            currentlyDownloadingFile = completedFiles
-                                .OrderBy(file => file.RequestedAt)
-                                .ThenBy(file => file.EnqueuedAt)
-                                .ThenBy(file => file.StartedAt)
-                                .ThenBy(file => file.EndedAt)
-                                .LastOrDefault(); // Choose the most recent completed file
-                        }
-                        else
-                        {
-                            // If no InProgress or Completed files exist, handle fallback
-                            currentlyDownloadingFile = group
-                                .OrderBy(file => file.RequestedAt)
-                                .ThenBy(file => file.EnqueuedAt)
-                                .ThenBy(file => file.StartedAt)
-                                .ThenBy(file => file.EndedAt)
-                                .LastOrDefault();
-                        }
-                    }
-
+                    var remainingSize = audioFiles.Sum(file => file.BytesRemaining);
+                    var totalSize = audioFiles.Sum(file => file.Size);
+                    var currentlyDownloadingFile = GetCurrentlyDownloadingFile(audioFiles);
                     var userDirectory = GetUserDirectory(queue.Username, directory.Directory, settings);
 
-                    // Group files by SecondParentFolder
-                    var groupedFiles = userDirectory.Files
-                        .GroupBy(file => file.ParentPath);
+                    CombineFilesWithMetadata(audioFiles, userDirectory.Files);
 
-                    foreach (var group in groupedFiles)
+                    var title = FileProcessingUtils.BuildTitle(audioFiles);
+                    var downloadId = Path.Combine(queue.Username, directory.Directory);
+
+                    var downloadItem = new DownloadClientItem
                     {
-                        var files = group.ToList();
-                        var isSingleFileInParentDirectory = files.Count == 1;
-
-                        // Ensure extensions are filled if missing
-                        foreach (var file in files)
-                        {
-                            if (!string.IsNullOrEmpty(file.Extension))
-                            {
-                                continue;
-                            }
-
-                            var lastDotIndex = file.Name.LastIndexOf('.');
-                            if (lastDotIndex >= 0)
-                            {
-                                file.Extension = file.Name[(lastDotIndex + 1) ..].ToLower();
-                            }
-                        }
-
-                        // Filter valid audio files
-                        var audioFiles = files
-                            .Where(file => !string.IsNullOrEmpty(file.Extension) && ValidAudioExtensions.Contains(file.Extension))
-                            .ToList();
-
-                        // Skip if no valid audio files
-                        if (audioFiles.Count == 0)
-                        {
-                            continue;
-                        }
-
-                        var firstFile = files.First();
-
-                        // Determine codec
-                        var codec = audioFiles.Select(f => f.Extension).Distinct().Count() == 1
-                            ? firstFile.Extension.ToUpper(System.Globalization.CultureInfo.InvariantCulture)
-                            : null;
-
-                        // Determine bit rate
-                        string bitRate = null;
-                        if (audioFiles.All(f => f.BitRate.HasValue && f.BitRate == firstFile.BitRate))
-                        {
-                            bitRate = $"{firstFile.BitRate}kbps";
-                        }
-
-                        // Determine sample rate and bitDepth
-                        string sampleRateAndDepth = null;
-                        if (audioFiles.All(f => f.SampleRate.HasValue && f.BitDepth.HasValue))
-                        {
-                            var sampleRate = firstFile.SampleRate / 1000.0; // Convert Hz to kHz
-                            var bitDepth = firstFile.BitDepth;
-                            sampleRateAndDepth = $"{bitDepth}bit {sampleRate?.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)}kHz";
-                        }
-
-                        // Determine VBR/CBR
-                        string isVariableBitRate = null;
-                        if (audioFiles.All(f => f.IsVariableBitRate.HasValue && f.IsVariableBitRate.Value))
-                        {
-                            isVariableBitRate = "VBR";
-                        }
-                        else if (audioFiles.All(f => f.IsVariableBitRate.HasValue && !f.IsVariableBitRate.Value))
-                        {
-                            isVariableBitRate = "CBR";
-                        }
-
-                        // Build the title
-                        var titleBuilder = new StringBuilder((firstFile.SecondParentFolder ?? firstFile.FirstParentFolder).Replace('\\', ' ')).Append(' ');
-                        if (isSingleFileInParentDirectory)
-                        {
-                            titleBuilder.Append(firstFile.Name.Replace($".{firstFile.Extension}", "")).Append(' ');
-                        }
-
-                        titleBuilder.AppendJoin(' ', codec, bitRate, sampleRateAndDepth, isVariableBitRate);
-                        var downloadId = Path.Combine(queue.Username, directory.Directory);
-
-                        var downloadItem = new DownloadClientItem
-                        {
-                            DownloadId = downloadId,
-                            Title = titleBuilder.ToString().Trim(), // Use the parent folder as the title
-                            TotalSize = totalSize,
-                            RemainingSize = remainingSize,
-                            Status = GetItemStatus(currentlyDownloadingFile.TransferState), // Get status from the first file
-                            Message = $"Downloaded from {queue.Username}", // Message based on the first file
-                            OutputPath = new OsPath(Path.Combine(completedDownloadsPath, directory.Files.First().FirstParentFolder)) // Completed downloads folder + parent folder
-                        };
-
-                        downloadItems.Add(downloadItem);
-                    }
+                        DownloadId = downloadId,
+                        Title = title,
+                        TotalSize = totalSize,
+                        RemainingSize = remainingSize,
+                        Status = GetItemStatus(currentlyDownloadingFile.TransferState), // Get status from the first file
+                        Message = $"Downloaded from {queue.Username}", // Message based on the first file
+                        OutputPath = new OsPath(Path.Combine(completedDownloadsPath, currentlyDownloadingFile.FirstParentFolder)) // Completed downloads folder + parent folder
+                    };
+                    downloadItems.Add(downloadItem);
                 }
             }
 
             return downloadItems;
+        }
+
+        private DirectoryFile GetCurrentlyDownloadingFile(List<DirectoryFile> files)
+        {
+            // Group files by their transfer state
+            var groupedByState = files.GroupBy(file => file.TransferState.State)
+                .ToDictionary(g => g.Key, g => g.ToList());
+            DirectoryFile currentlyDownloadingFile;
+
+            // Prioritize the downloading state (InProgress)
+            if (groupedByState.TryGetValue(TransferStateEnum.InProgress, out var inProgressFiles))
+            {
+                // If there are any files in progress, select the most recent one based on your ordering rules
+                currentlyDownloadingFile = inProgressFiles
+                    .OrderBy(file => file.RequestedAt)
+                    .ThenBy(file => file.EnqueuedAt)
+                    .ThenBy(file => file.StartedAt)
+                    .FirstOrDefault(); // No need for Last since InProgress is a priority
+            }
+            else if (groupedByState.TryGetValue(TransferStateEnum.Completed, out var completedFiles))
+            {
+                // If no files are in progress, select the most recently completed file
+                currentlyDownloadingFile = completedFiles
+                    .OrderBy(file => file.RequestedAt)
+                    .ThenBy(file => file.EnqueuedAt)
+                    .ThenBy(file => file.StartedAt)
+                    .ThenBy(file => file.EndedAt)
+                    .LastOrDefault(); // Choose the most recent completed file
+            }
+            else
+            {
+                // If no InProgress or Completed files exist, handle fallback
+                currentlyDownloadingFile = files
+                    .OrderBy(file => file.RequestedAt)
+                    .ThenBy(file => file.EnqueuedAt)
+                    .ThenBy(file => file.StartedAt)
+                    .ThenBy(file => file.EndedAt)
+                    .LastOrDefault();
+            }
+
+            return currentlyDownloadingFile;
         }
 
         private UserDirectory GetUserDirectory(string username, string directory, SlskdSettings settings)
@@ -274,6 +189,25 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             return userDirectoryResult;
         }
 
+        private List<DirectoryFile> CombineFilesWithMetadata(List<DirectoryFile> files, List<SearchResponseFile> metadataFiles)
+        {
+            foreach (var file in files)
+            {
+                var metadata = metadataFiles.FirstOrDefault(m => m.FileName == file.FileName);
+                if (metadata == null)
+                {
+                    continue;
+                }
+
+                file.BitRate = metadata.BitRate;
+                file.SampleRate = metadata.SampleRate;
+                file.BitDepth = metadata.BitDepth;
+                file.IsVariableBitRate = metadata.IsVariableBitRate;
+            }
+
+            return files;
+        }
+
         public void RemoveFromQueue(string downloadId, SlskdSettings settings)
         {
             var split = downloadId.Split('\\');
@@ -303,6 +237,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             var removeDirectoryRequest = BuildRequest(settings, 0.01)
                 .Resource($"/api/v0/files/downloads/directories/{base64Directory}")
                 .AddQueryParam("remove", true)
+                .WithRateLimit(0.2)
                 .Build();
             removeDirectoryRequest.Method = HttpMethod.Delete;
             ProcessRequest(removeDirectoryRequest);
@@ -346,6 +281,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             downloadRequest.Headers.ContentType = "application/json";
             downloadRequest.SetContent(json);
             downloadRequest.ContentSummary = json;
+            downloadRequest.RequestTimeout = new TimeSpan(0, 1, 0);
             var downloadResult = string.Empty;
 
             try

@@ -28,7 +28,7 @@ namespace NzbDrone.Core.Indexers.Slskd
         public int? EarlyReleaseLimit { get; set; }
 
         [FieldDefinition(3, Type = FieldType.Number, Label = "Search timeout", Unit = "seconds", HelpText = "", Advanced = true)]
-        public int? SearchTimeout { get; set; } = 15;
+        public int SearchTimeout { get; set; } = 15;
 
         [FieldDefinition(4, Type = FieldType.Number, Label = "Minimum download speed", Unit = "MB/s", HelpText = "ALl the users uploading at a lower speed will be filtered out", Advanced = true)]
         public int? MinimumPeerUploadSpeed { get; set; } = 1;
