@@ -21,7 +21,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
         SlskdOptions GetOptions(SlskdSettings settings);
         List<DownloadClientItem> GetQueue(SlskdSettings settings);
         string Download(string searchId, string username, string downloadPath, SlskdSettings settings);
-        void RemoveFromQueue(string downloadId, SlskdSettings settings);
+        void RemoveFromQueue(string downloadId, bool deleteData, SlskdSettings settings);
     }
 
     public class SlskdProxy : ISlskdProxy
@@ -94,9 +94,18 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                     var remainingSize = audioFiles.Sum(file => file.BytesRemaining);
                     var totalSize = audioFiles.Sum(file => file.Size);
                     var currentlyDownloadingFile = GetCurrentlyDownloadingFile(audioFiles);
-                    var userDirectory = GetUserDirectory(queue.Username, directory.Directory, settings);
+                    var message = $"Downloaded from user {queue.Username}";
+                    var userStatus = GetUserStatus(queue.Username, settings);
 
-                    CombineFilesWithMetadata(audioFiles, userDirectory.Files);
+                    if (userStatus.IsOnline)
+                    {
+                        var userDirectory = GetUserDirectory(queue.Username, directory.Directory, settings);
+                        CombineFilesWithMetadata(audioFiles, userDirectory.Files);
+                    }
+                    else
+                    {
+                        message = $"User {queue.Username} is offline, cannot get media quality";
+                    }
 
                     var title = FileProcessingUtils.BuildTitle(audioFiles);
                     var downloadId = Path.Combine(queue.Username, directory.Directory);
@@ -108,8 +117,9 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                         TotalSize = totalSize,
                         RemainingSize = remainingSize,
                         Status = GetItemStatus(currentlyDownloadingFile.TransferState), // Get status from the first file
-                        Message = $"Downloaded from {queue.Username}", // Message based on the first file
-                        OutputPath = new OsPath(Path.Combine(completedDownloadsPath, currentlyDownloadingFile.FirstParentFolder)) // Completed downloads folder + parent folder
+                        Message = message, // Message based on the first file
+                        OutputPath = new OsPath(Path.Combine(completedDownloadsPath, currentlyDownloadingFile.FirstParentFolder)), // Completed downloads folder + parent folder
+                        CanBeRemoved = true
                     };
                     downloadItems.Add(downloadItem);
                 }
@@ -130,6 +140,24 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             {
                 // If there are any files in progress, select the most recent one based on your ordering rules
                 currentlyDownloadingFile = inProgressFiles
+                    .OrderBy(file => file.RequestedAt)
+                    .ThenBy(file => file.EnqueuedAt)
+                    .ThenBy(file => file.StartedAt)
+                    .FirstOrDefault(); // No need for Last since InProgress is a priority
+            }
+            else if (groupedByState.TryGetValue(TransferStateEnum.Queued, out var queuedFiles))
+            {
+                // If there are any files in progress, select the most recent one based on your ordering rules
+                currentlyDownloadingFile = queuedFiles
+                    .OrderBy(file => file.RequestedAt)
+                    .ThenBy(file => file.EnqueuedAt)
+                    .ThenBy(file => file.StartedAt)
+                    .FirstOrDefault(); // No need for Last since InProgress is a priority
+            }
+            else if (groupedByState.TryGetValue(TransferStateEnum.Requested, out var requestedFiles))
+            {
+                // If there are any files in progress, select the most recent one based on your ordering rules
+                currentlyDownloadingFile = requestedFiles
                     .OrderBy(file => file.RequestedAt)
                     .ThenBy(file => file.EnqueuedAt)
                     .ThenBy(file => file.StartedAt)
@@ -189,6 +217,15 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             return userDirectoryResult;
         }
 
+        private UserStatus GetUserStatus(string username, SlskdSettings settings)
+        {
+            var userStatusRequest = BuildRequest(settings, 1)
+                .Resource($"/api/v0/users/{username}/status")
+                .Build();
+            userStatusRequest.Headers.ContentType = "application/json";
+            return ProcessRequest<UserStatus>(userStatusRequest);
+        }
+
         private List<DirectoryFile> CombineFilesWithMetadata(List<DirectoryFile> files, List<SearchResponseFile> metadataFiles)
         {
             foreach (var file in files)
@@ -208,7 +245,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             return files;
         }
 
-        public void RemoveFromQueue(string downloadId, SlskdSettings settings)
+        public void RemoveFromQueue(string downloadId, bool deleteData, SlskdSettings settings)
         {
             var split = downloadId.Split('\\');
             var username = split[0];
@@ -227,7 +264,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             {
                 var removeFileRequest = BuildRequest(settings, 0.01)
                     .Resource($"/api/v0/transfers/downloads/{username}/{directoryFile.Id}")
-                    .AddQueryParam("remove", true)
+                    .AddQueryParam("remove", deleteData)
                     .Build();
                 removeFileRequest.Method = HttpMethod.Delete;
                 ProcessRequest(removeFileRequest);

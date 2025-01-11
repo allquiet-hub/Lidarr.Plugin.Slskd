@@ -46,12 +46,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
         public override void RemoveItem(DownloadClientItem item, bool deleteData)
         {
-            if (deleteData)
-            {
-                DeleteItemData(item);
-            }
-
-            _proxy.RemoveFromQueue(item.DownloadId, Settings);
+            _proxy.RemoveFromQueue(item.DownloadId, deleteData, Settings);
         }
 
         public override Task<string> Download(RemoteAlbum remoteAlbum, IIndexer indexer)
