@@ -163,7 +163,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                     .ThenBy(file => file.StartedAt)
                     .FirstOrDefault(); // No need for Last since InProgress is a priority
             }
-            else if (groupedByState.TryGetValue(TransferStateEnum.Completed, out var completedFiles))
+            else if (groupedByState.Count == 1 && groupedByState.TryGetValue(TransferStateEnum.Completed, out var completedFiles))
             {
                 // If no files are in progress, select the most recently completed file
                 currentlyDownloadingFile = completedFiles
@@ -180,7 +180,6 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                     .OrderBy(file => file.RequestedAt)
                     .ThenBy(file => file.EnqueuedAt)
                     .ThenBy(file => file.StartedAt)
-                    .ThenBy(file => file.EndedAt)
                     .LastOrDefault();
             }
 
@@ -273,8 +272,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             var base64Directory = Base64Encode(directoryName);
             var removeDirectoryRequest = BuildRequest(settings, 0.01)
                 .Resource($"/api/v0/files/downloads/directories/{base64Directory}")
-                .AddQueryParam("remove", true)
-                .WithRateLimit(0.2)
+                .AddQueryParam("remove", deleteData)
                 .Build();
             removeDirectoryRequest.Method = HttpMethod.Delete;
             ProcessRequest(removeDirectoryRequest);
@@ -307,7 +305,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 throw new DownloadClientException("Error adding item to Slskd: {0}", downloadUid);
             }
 
-            var files = userResponse.Files.Where(f => f.FileName.StartsWith(downloadPath)).ToList();
+            var files = userResponse.Files.Where(f => f.ParentPath == downloadPath).ToList();
 
             downloadList.AddRange(files.Select(file => new DownloadRequest { Filename = file.FileName, Size = file.Size }));
             var downloadRequest = BuildRequest(settings, 0.01)
