@@ -108,10 +108,11 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                     }
 
                     var title = FileProcessingUtils.BuildTitle(audioFiles);
+                    var downloadId = queue.Username + "\\" + directory.Directory;
 
                     var downloadItem = new DownloadClientItem
                     {
-                        DownloadId = audioFiles.First().Id,
+                        DownloadId = downloadId,
                         Title = title,
                         TotalSize = totalSize,
                         RemainingSize = remainingSize,
@@ -261,10 +262,13 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
         public void RemoveFromQueue(string downloadId, bool deleteData, SlskdSettings settings)
         {
-            var (username, directoryName) = GetDownloadFileUserAndDirectory(downloadId, settings);
+            var split = downloadId.Split('\\');
+            var username = split[0];
+            var directoryPath = downloadId.Split('\\', 2)[1];
+            var directoryName = split[^1];
             var downloadsRequest = BuildRequest(settings, 1).Resource($"/api/v0/transfers/downloads/{username}");
             var downloadQueue = ProcessRequest<DownloadsQueue>(downloadsRequest);
-            var downloadDirectory = downloadQueue.Directories.FirstOrDefault(q => q.Directory.StartsWith(directoryName));
+            var downloadDirectory = downloadQueue.Directories.FirstOrDefault(q => q.Directory.StartsWith(directoryPath));
 
             if (downloadDirectory == null || downloadDirectory.Files.Count == 0)
             {
@@ -308,7 +312,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
         public string Download(string searchId, string username, string downloadPath, SlskdSettings settings)
         {
-            var downloadUid = Path.Combine(username, downloadPath);
+            var downloadUid = username + "\\" + downloadPath;
 
             var request = BuildRequest(settings, 1)
                 .Resource($"/api/v0/searches/{searchId}")
