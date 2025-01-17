@@ -1,30 +1,22 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net6.0</TargetFramework>
-    <AssemblyName>Lidarr.Plugin.Slskd</AssemblyName>
-    <RootNamespace>NzbDrone.Plugin.Slskd</RootNamespace>
+    <TargetFrameworks>net6.0</TargetFrameworks>
   </PropertyGroup>
-
-  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
-    <OutputPath>C:\ProgramData\Lidarr\plugins\allquiet-hub\Lidarr.Plugin.Slskd\</OutputPath>
-  </PropertyGroup>
-  <ItemGroup>
-    <PackageReference Include="FluentValidation" Version="9.5.4" />
-    <PackageReference Include="NLog" Version="5.3.4" />
-  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Lidarr\src\NzbDrone.Core\Lidarr.Core.csproj">
-      <Private>False</Private>
-      <CopyLocalSatelliteAssemblies>False</CopyLocalSatelliteAssemblies>
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
     </ProjectReference>
     <ProjectReference Include="..\Lidarr\src\NzbDrone.Common\Lidarr.Common.csproj">
-      <Private>False</Private>
-      <CopyLocalSatelliteAssemblies>False</CopyLocalSatelliteAssemblies>
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
     </ProjectReference>
   </ItemGroup>
   <Target Name="ZipOutputPath" AfterTargets="Publish">
-    <ZipDirectory SourceDirectory="$(PublishDir)" DestinationFile="$(SolutionDir)\..\Lidarr.Plugin.Slskd.$(TargetFramework).zip" />
+    <ZipDirectory
+        SourceDirectory="$(PublishDir)"
+        DestinationFile="$(SolutionDir)\..\Lidarr.Plugin.Slskd.$(TargetFramework).zip" />
   </Target>
 
 

@@ -108,11 +108,10 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                     }
 
                     var title = FileProcessingUtils.BuildTitle(audioFiles);
-                    var downloadId = Path.Combine(queue.Username, directory.Directory);
 
                     var downloadItem = new DownloadClientItem
                     {
-                        DownloadId = downloadId,
+                        DownloadId = audioFiles.First().Id,
                         Title = title,
                         TotalSize = totalSize,
                         RemainingSize = remainingSize,
@@ -216,6 +215,22 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             return userDirectoryResult;
         }
 
+        private Tuple<string, string> GetDownloadFileUserAndDirectory(string fileId, SlskdSettings settings)
+        {
+            var downloadsRequest = BuildRequest(settings, 1).Resource("/api/v0/transfers/downloads");
+            var downloadsQueues = ProcessRequest<List<DownloadsQueue>>(downloadsRequest);
+
+            foreach (var queue in downloadsQueues)
+            {
+                foreach (var directory in queue.Directories.Where(directory => directory.Files.Any(file => file.Id == fileId)))
+                {
+                    return new Tuple<string, string>(queue.Username, directory.Directory);
+                }
+            }
+
+            return new Tuple<string, string>(string.Empty, string.Empty);
+        }
+
         private UserStatus GetUserStatus(string username, SlskdSettings settings)
         {
             var userStatusRequest = BuildRequest(settings, 1)
@@ -246,25 +261,32 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
         public void RemoveFromQueue(string downloadId, bool deleteData, SlskdSettings settings)
         {
-            var split = downloadId.Split('\\');
-            var username = split[0];
-            var directoryPath = downloadId.Split('\\', 2)[1];
-            var directoryName = split[^1];
+            var (username, directoryName) = GetDownloadFileUserAndDirectory(downloadId, settings);
             var downloadsRequest = BuildRequest(settings, 1).Resource($"/api/v0/transfers/downloads/{username}");
             var downloadQueue = ProcessRequest<DownloadsQueue>(downloadsRequest);
-            var downloadDirectory = downloadQueue.Directories.FirstOrDefault(q => q.Directory.StartsWith(directoryPath));
+            var downloadDirectory = downloadQueue.Directories.FirstOrDefault(q => q.Directory.StartsWith(directoryName));
 
             if (downloadDirectory == null || downloadDirectory.Files.Count == 0)
             {
                 return;
             }
 
-            foreach (var directoryFile in downloadDirectory.Files)
+            foreach (var file in downloadDirectory.Files)
             {
                 var removeFileRequest = BuildRequest(settings, 0.01)
-                    .Resource($"/api/v0/transfers/downloads/{username}/{directoryFile.Id}")
+                    .Resource($"/api/v0/transfers/downloads/{username}/{file.Id}")
                     .AddQueryParam("remove", deleteData)
                     .Build();
+                if (file.TransferState.State != TransferStateEnum.Completed)
+                {
+                    var cancelFileRequest = BuildRequest(settings, 0.01)
+                        .Resource($"/api/v0/transfers/downloads/{username}/{file.Id}")
+                        .AddQueryParam("remove", false)
+                        .Build();
+                    cancelFileRequest.Method = HttpMethod.Delete;
+                    ProcessRequest(cancelFileRequest);
+                }
+
                 removeFileRequest.Method = HttpMethod.Delete;
                 ProcessRequest(removeFileRequest);
             }
