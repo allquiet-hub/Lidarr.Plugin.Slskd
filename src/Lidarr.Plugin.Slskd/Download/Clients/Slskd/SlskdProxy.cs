@@ -94,13 +94,24 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                     var remainingSize = audioFiles.Sum(file => file.BytesRemaining);
                     var totalSize = audioFiles.Sum(file => file.Size);
                     var currentlyDownloadingFile = GetCurrentlyDownloadingFile(audioFiles);
-                    var message = $"Downloaded from user {queue.Username}";
+
                     var userStatus = GetUserStatus(queue.Username, settings);
+                    var message = $"Downloaded from user {queue.Username}";
+                    var pendingFiles = directory.Files.Where(f => f.TransferState.State != TransferStateEnum.Completed).ToList();
 
                     if (userStatus.IsOnline)
                     {
                         var userDirectory = GetUserDirectory(queue.Username, directory.Directory, settings);
                         CombineFilesWithMetadata(audioFiles, userDirectory.Files);
+                        if (pendingFiles.All(f => f.TransferState == new TransferStates()
+                            {
+                                State = TransferStateEnum.Queued,
+                                Substate = TransferStateEnum.Remotely
+                            }))
+                        {
+                            var position = GetFilePlaceInUserQueue(queue.Username, pendingFiles.First().Id, settings);
+                            message = $"User {queue.Username} has queued your download, position {position}";
+                        }
                     }
                     else
                     {
@@ -184,6 +195,24 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             }
 
             return currentlyDownloadingFile;
+        }
+
+        private int? GetFilePlaceInUserQueue(string username, string fileId, SlskdSettings settings)
+        {
+            var filePlaceInQueueRequest = BuildRequest(settings, 1)
+                .Resource($"/api/v0/transfers/downloads/{username}/{fileId}/position")
+                .Build();
+            int? position = null;
+            try
+            {
+                position = ProcessRequest<int>(filePlaceInQueueRequest);
+            }
+            catch (Exception)
+            {
+                throw new DownloadClientException("Error getting file position in queue from user: {0}, fileId: {1}", username, fileId);
+            }
+
+            return position;
         }
 
         private UserDirectory GetUserDirectory(string username, string directory, SlskdSettings settings)
