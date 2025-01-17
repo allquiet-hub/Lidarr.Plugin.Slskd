@@ -57,7 +57,7 @@ jobs:
           path: ./${{ env.PLUGIN_NAME }}.${{ matrix.framework }}.zip
   publish:
     needs: build
-    if: github.ref == 'refs/heads/master'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Download Artifact (net6.0)
