@@ -13,6 +13,11 @@
       <ExcludeAssets>runtime</ExcludeAssets>
     </ProjectReference>
   </ItemGroup>
+  <ItemGroup>
+    <Content Include="..\..\.github\workflows\build.yml">
+      <Link>build.yml</Link>
+    </Content>
+  </ItemGroup>
   <Target Name="ZipOutputPath" AfterTargets="Publish">
     <ZipDirectory
         SourceDirectory="$(PublishDir)"
