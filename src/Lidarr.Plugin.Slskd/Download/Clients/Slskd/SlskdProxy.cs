@@ -103,7 +103,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                     {
                         var userDirectory = GetUserDirectory(queue.Username, directory.Directory, settings);
                         CombineFilesWithMetadata(audioFiles, userDirectory.Files);
-                        if (pendingFiles.All(f => f.TransferState == new TransferStates()
+                        if (pendingFiles.Any() && pendingFiles.All(f => f.TransferState == new TransferStates()
                             {
                                 State = TransferStateEnum.Queued,
                                 Substate = TransferStateEnum.Remotely
