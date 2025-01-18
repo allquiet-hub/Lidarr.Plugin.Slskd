@@ -66,25 +66,33 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
                     if (audioFiles.All(f => f.TransferState.State == TransferStateEnum.Completed))
                     {
-                        var userStatus = GetUserStatus(queue.Username, settings);
-                        if (userStatus.IsOnline)
+                        try
                         {
-                            var pendingFiles = directory.Files.Where(f => f.TransferState.State != TransferStateEnum.Completed).ToList();
-                            var userDirectory = GetUserDirectory(queue.Username, directory.Directory, settings);
-                            FileProcessingUtils.CombineFilesWithMetadata(audioFiles, userDirectory.Files);
-                            if (pendingFiles.Any() && pendingFiles.All(f => f.TransferState == new TransferStates()
-                                {
-                                    State = TransferStateEnum.Queued,
-                                    Substate = TransferStateEnum.Remotely
-                                }))
+                            var userStatus = GetUserStatus(queue.Username, settings);
+                            if (userStatus.IsOnline)
                             {
-                                var position = GetFilePlaceInUserQueue(queue.Username, pendingFiles.First().Id, settings);
-                                message = $"User {queue.Username} has queued your download, position {position}";
+                                var pendingFiles = directory.Files.Where(f => f.TransferState.State != TransferStateEnum.Completed).ToList();
+                                var userDirectory = GetUserDirectory(queue.Username, directory.Directory, settings);
+                                FileProcessingUtils.CombineFilesWithMetadata(audioFiles, userDirectory.Files);
+                                if (pendingFiles.Any() && pendingFiles.All(f => f.TransferState == new TransferStates()
+                                    {
+                                        State = TransferStateEnum.Queued,
+                                        Substate = TransferStateEnum.Remotely
+                                    }))
+                                {
+                                    var position = GetFilePlaceInUserQueue(queue.Username, pendingFiles.First().Id, settings);
+                                    message = $"User {queue.Username} has queued your download, position {position}";
+                                }
+                            }
+                            else
+                            {
+                                message = $"User {queue.Username} is offline, cannot get media quality";
                             }
                         }
-                        else
+                        catch (HttpException httpException)
                         {
-                            message = $"User {queue.Username} is offline, cannot get media quality";
+                            _logger.Error(httpException.Message);
+                            continue;
                         }
                     }
 
