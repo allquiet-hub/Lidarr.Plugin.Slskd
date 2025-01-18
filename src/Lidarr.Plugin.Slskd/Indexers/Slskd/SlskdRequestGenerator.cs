@@ -20,7 +20,7 @@ namespace NzbDrone.Core.Indexers.Slskd
         public IndexerPageableRequestChain GetRecentRequests()
         {
             var pageableRequests = new IndexerPageableRequestChain();
-            pageableRequests.Add(GetRequests("no copyright music", searchTimeout: 2));
+            pageableRequests.Add(GetRequests("Silent Partner Chances", searchTimeout: 5, 0));
             return pageableRequests;
         }
 
@@ -40,14 +40,15 @@ namespace NzbDrone.Core.Indexers.Slskd
             return new IndexerPageableRequestChain();
         }
 
-        private IEnumerable<IndexerRequest> GetRequests(string searchParameters, int? searchTimeout = null)
+        private IEnumerable<IndexerRequest> GetRequests(string searchParameters, int? searchTimeout = null, int? uploadSpeed = null)
         {
             searchTimeout ??= Settings.SearchTimeout * 1000; // Default to settings timeout
+            uploadSpeed ??= Settings.MinimumPeerUploadSpeed;
             var searchRequest = new SearchRequest()
             {
                 SearchText = searchParameters,
                 SearchTimeout = searchTimeout.Value,
-                MinimumPeerUploadSpeed = Settings.MinimumPeerUploadSpeed * 1024 * 1024, // Convert MB/s to B/s
+                MinimumPeerUploadSpeed = uploadSpeed * 1024 * 1024, // Convert MB/s to B/s
             };
 
             var request = BuildSearchRequest(searchRequest);
