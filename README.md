@@ -22,12 +22,28 @@ You can observe the progress in the lower left corner. The installation will tak
 
 ## Configuration
 
+### Download Client
+
 Once the plugin is installed, Slskd can be added as a download client. 
 - Navigate to `/settings/downloadclients`, and select the plus button under Download clients. Slskd will appear at the bottom under the Other section.
 - Enter the correct hostname.
 - Enter the API key
 - Select the Test button.
 - If the Test returns a green checkmark, select Save.
+
+### Indexer
+
+In order to search, Slskd must also be added as a Indexer. 
+- Navigate to `/settings/indexers`, and select the plus button under Indexers. Slskd will appear at the bottom under the Other section.
+- Enter the correct URL.
+- Enter the API key
+- Select the Test button.
+  - The Indexer test will send a test search to slskd for "Silent Partner Chances".
+- If the Test returns a green checkmark, select Save.
+
+### Delay Profile
+
+
 
 ## Verification
 
