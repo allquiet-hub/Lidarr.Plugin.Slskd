@@ -235,7 +235,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
         private static HttpRequestBuilder BuildRequest(SlskdSettings settings, string resource)
         {
             return new HttpRequestBuilder(settings.UseSsl, settings.Host, settings.Port, settings.UrlBase)
-                .WithRateLimit(0.2)
+                .WithRateLimit(0.1)
                 .Resource(resource)
                 .Accept(HttpAccept.Json)
                 .SetHeader("X-API-Key", settings.ApiKey);
@@ -265,7 +265,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
             while (stopwatch.Elapsed < timeout)
             {
-                var fileRequest = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}/{fileId}").WithRateLimit(0.5);
+                var fileRequest = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}/{fileId}").WithRateLimit(0.1);
                 var file = ExecuteGet<DirectoryFile>(fileRequest);
 
                 if (file.TransferState.State != TransferStateEnum.Completed)
