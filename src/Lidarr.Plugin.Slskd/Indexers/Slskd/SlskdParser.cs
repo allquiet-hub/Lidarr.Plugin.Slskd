@@ -2,10 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using System.Text;
-using Newtonsoft.Json;
 using NLog;
 using NzbDrone.Common.Http;
+using NzbDrone.Common.Serializer;
 using NzbDrone.Core.Parser.Model;
 using NzbDrone.Core.ThingiProvider;
 using NzbDrone.Plugin.Slskd.Helpers;
@@ -35,12 +34,11 @@ namespace NzbDrone.Core.Indexers.Slskd
             var torrentInfos = new List<ReleaseInfo>();
 
             var jsonResponse = new HttpResponse<SearchResult>(indexerResponse.HttpResponse);
-            var searchRequest =
-                JsonConvert.DeserializeObject<SearchRequest>(indexerResponse.HttpRequest.ContentSummary);
+            var searchRequest = Json.Deserialize(indexerResponse.HttpRequest.ContentSummary, typeof(SearchRequest)) as SearchRequest;
             var searchResult = jsonResponse.Resource;
             var searchId = searchResult.Id;
 
-            var searchTimeout = searchRequest.SearchTimeout ?? _settings.SearchTimeout;
+            var searchTimeout = searchRequest?.SearchTimeout ?? _settings.SearchTimeout;
             searchTimeout += 5; // Add 5 seconds buffer
             WaitForSearchCompletion(searchId, searchTimeout * 1000);
 

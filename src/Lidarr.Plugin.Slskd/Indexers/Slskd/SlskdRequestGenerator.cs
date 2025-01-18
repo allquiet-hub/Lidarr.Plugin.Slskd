@@ -1,7 +1,7 @@
 using System.Collections.Generic;
-using Newtonsoft.Json;
 using NLog;
 using NzbDrone.Common.Http;
+using NzbDrone.Common.Serializer;
 using NzbDrone.Core.IndexerSearch.Definitions;
 using NzbDrone.Plugin.Slskd.Models;
 
@@ -60,7 +60,7 @@ namespace NzbDrone.Core.Indexers.Slskd
                 .SetHeader("X-API-Key", Settings.ApiKey)
                 .Post()
                 .Build();
-            var json = JsonConvert.SerializeObject(searchRequest);
+            var json = searchRequest.ToJson();
             request.Headers.ContentType = "application/json";
             request.SetContent(json);
             request.ContentSummary = json;
