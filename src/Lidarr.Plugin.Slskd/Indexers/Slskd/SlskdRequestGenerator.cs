@@ -20,7 +20,7 @@ namespace NzbDrone.Core.Indexers.Slskd
         public IndexerPageableRequestChain GetRecentRequests()
         {
             var pageableRequests = new IndexerPageableRequestChain();
-            pageableRequests.Add(GetRequests("Silent Partner Chances", searchTimeout: 5, 0));
+            pageableRequests.Add(GetRequests("Silent Partner Chances", searchTimeout: 5000, 0));
             return pageableRequests;
         }
 
@@ -48,8 +48,12 @@ namespace NzbDrone.Core.Indexers.Slskd
             {
                 SearchText = searchParameters,
                 SearchTimeout = searchTimeout.Value,
-                MinimumPeerUploadSpeed = uploadSpeed * 1024 * 1024, // Convert MB/s to B/s
             };
+
+            if (uploadSpeed > 0)
+            {
+                searchRequest.MinimumPeerUploadSpeed = uploadSpeed * 1024 * 1024; // Convert MB/s to B/s
+            }
 
             var request = BuildSearchRequest(searchRequest);
             yield return new IndexerRequest(request);
