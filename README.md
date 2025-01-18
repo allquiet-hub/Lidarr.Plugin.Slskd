@@ -1,3 +1,3 @@
-To generate the Api Key necessary for the communication to the Slskd app follow the steps here:
+# README
 
-https://github.com/slskd/slskd/blob/master/docs/config.md#authentication
+For installation and configuration guides, please reference the Lidarr Wiki: https://wiki.servarr.com/en/lidarr/plugins#slskd
