@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using NzbDrone.Common.EnsureThat;
 using NzbDrone.Plugin.Slskd.Models;
 
 namespace NzbDrone.Plugin.Slskd.Helpers;
@@ -11,7 +12,7 @@ public static class FileProcessingUtils
 {
     public static readonly HashSet<string> ValidAudioExtensions = new HashSet<string>
     {
-        "flac", "alac", "wav", "ape", "ogg", "aac", "mp3", "wma"
+        "flac", "alac", "wav", "ape", "ogg", "aac", "mp3", "wma", "m4a",
     };
 
     public static void EnsureFileExtensions<T>(List<T> files)
@@ -32,9 +33,10 @@ public static class FileProcessingUtils
         }
     }
 
-    public static List<T> FilterValidAudioFiles<T>(List<T> files)
+    public static List<T> FilterValidAudioFiles<T>(this List<T> files)
         where T : SlskdFile
     {
+        EnsureFileExtensions(files);
         return files.Where(file => !string.IsNullOrEmpty(file.Extension) && ValidAudioExtensions.Contains(file.Extension)).ToList();
     }
 

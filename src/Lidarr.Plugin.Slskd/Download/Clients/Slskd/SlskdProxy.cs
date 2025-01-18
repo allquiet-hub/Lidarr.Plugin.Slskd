@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -13,15 +14,6 @@ using NzbDrone.Plugin.Slskd.Models;
 
 namespace NzbDrone.Core.Download.Clients.Slskd
 {
-    public interface ISlskdProxy
-    {
-        bool TestConnectivity(SlskdSettings settings);
-        SlskdOptions GetOptions(SlskdSettings settings);
-        List<DownloadClientItem> GetQueue(SlskdSettings settings);
-        string Download(string searchId, string username, string downloadPath, SlskdSettings settings);
-        void RemoveFromQueue(string downloadId, bool deleteData, SlskdSettings settings);
-    }
-
     public class SlskdProxy : ISlskdProxy
     {
         private readonly IHttpClient _httpClient;
@@ -35,183 +27,165 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
         public bool TestConnectivity(SlskdSettings settings)
         {
-            return IsConnectedLoggedIn(settings);
+            var response = ExecuteGet<Application>(BuildRequest(settings, "/api/v0/application"));
+            return response?.Server.IsConnected == true && response.Server.IsLoggedIn;
         }
 
         public SlskdOptions GetOptions(SlskdSettings settings)
         {
-            if (settings == null)
-            {
-                return null;
-            }
-
-            var request = BuildRequest(settings, 1).Resource("/api/v0/options");
-            var response = ProcessRequest<SlskdOptions>(request);
-
-            return response;
+            return ExecuteGet<SlskdOptions>(BuildRequest(settings, "/api/v0/options"));
         }
 
         public List<DownloadClientItem> GetQueue(SlskdSettings settings)
         {
-            var downloadsRequest = BuildRequest(settings, 1).Resource("/api/v0/transfers/downloads");
-            var downloadsQueues = ProcessRequest<List<DownloadsQueue>>(downloadsRequest);
+            var downloadsQueues = ExecuteGet<List<DownloadsQueue>>(BuildRequest(settings, "/api/v0/transfers/downloads"));
+            if (downloadsQueues == null)
+            {
+                return new List<DownloadClientItem>();
+            }
 
-            // Fetch completed downloads folder from options
             var completedDownloadsPath = GetOptions(settings).Directories.Downloads;
-            var downloadItems = new List<DownloadClientItem>();
-
-            // Transform grouped files into DownloadClientItem instances
+            var items = new List<DownloadClientItem>();
             foreach (var queue in downloadsQueues)
             {
                 foreach (var directory in queue.Directories)
                 {
-                    // Ensure extensions are filled if missing
                     FileProcessingUtils.EnsureFileExtensions(directory.Files);
+                    var audioFiles = directory.Files.FilterValidAudioFiles();
 
-                    // Filter valid audio files
-                    var audioFiles = directory.Files
-                        .Where(file =>
-                            !string.IsNullOrEmpty(file.Extension) &&
-                            FileProcessingUtils.ValidAudioExtensions.Contains(file.Extension))
-                        .ToList();
-
-                    // Skip if no valid audio files
-                    if (audioFiles.Count == 0)
+                    if (!audioFiles.Any())
                     {
-                        continue;
+                        return null;
                     }
 
-                    var remainingSize = audioFiles.Sum(file => file.BytesRemaining);
-                    var totalSize = audioFiles.Sum(file => file.Size);
                     var currentlyDownloadingFile = FileProcessingUtils.GetCurrentlyDownloadingFile(audioFiles);
+                    var totalSize = audioFiles.Sum(file => file.Size);
+                    var remainingSize = audioFiles.Sum(file => file.BytesRemaining);
 
-                    var userStatus = GetUserStatus(queue.Username, settings);
                     var message = $"Downloaded from user {queue.Username}";
-                    var pendingFiles = directory.Files.Where(f => f.TransferState.State != TransferStateEnum.Completed).ToList();
 
-                    if (userStatus.IsOnline)
+                    if (audioFiles.All(f => f.TransferState.State == TransferStateEnum.Completed))
                     {
-                        var userDirectory = GetUserDirectory(queue.Username, directory.Directory, settings);
-                        FileProcessingUtils.CombineFilesWithMetadata(audioFiles, userDirectory.Files);
-                        if (pendingFiles.Any() && pendingFiles.All(f => f.TransferState == new TransferStates()
-                            {
-                                State = TransferStateEnum.Queued,
-                                Substate = TransferStateEnum.Remotely
-                            }))
+                        var userStatus = GetUserStatus(queue.Username, settings);
+                        if (userStatus.IsOnline)
                         {
-                            var position = GetFilePlaceInUserQueue(queue.Username, pendingFiles.First().Id, settings);
-                            message = $"User {queue.Username} has queued your download, position {position}";
+                            var pendingFiles = directory.Files.Where(f => f.TransferState.State != TransferStateEnum.Completed).ToList();
+                            var userDirectory = GetUserDirectory(queue.Username, directory.Directory, settings);
+                            FileProcessingUtils.CombineFilesWithMetadata(audioFiles, userDirectory.Files);
+                            if (pendingFiles.Any() && pendingFiles.All(f => f.TransferState == new TransferStates()
+                                {
+                                    State = TransferStateEnum.Queued,
+                                    Substate = TransferStateEnum.Remotely
+                                }))
+                            {
+                                var position = GetFilePlaceInUserQueue(queue.Username, pendingFiles.First().Id, settings);
+                                message = $"User {queue.Username} has queued your download, position {position}";
+                            }
+                        }
+                        else
+                        {
+                            message = $"User {queue.Username} is offline, cannot get media quality";
                         }
                     }
-                    else
-                    {
-                        message = $"User {queue.Username} is offline, cannot get media quality";
-                    }
 
-                    var title = FileProcessingUtils.BuildTitle(audioFiles);
-                    var downloadId = queue.Username + "\\" + directory.Directory;
-
-                    var downloadItem = new DownloadClientItem
+                    items.Add(new DownloadClientItem
                     {
-                        DownloadId = downloadId,
-                        Title = title,
+                        DownloadId = $"{queue.Username}\\{directory.Directory}",
+                        Title = FileProcessingUtils.BuildTitle(audioFiles),
                         TotalSize = totalSize,
                         RemainingSize = remainingSize,
-                        Status = GetItemStatus(currentlyDownloadingFile.TransferState), // Get status from the first file
-                        Message = message, // Message based on the first file
-                        OutputPath = new OsPath(Path.Combine(completedDownloadsPath, currentlyDownloadingFile.FirstParentFolder)), // Completed downloads folder + parent folder
-                        CanBeRemoved = true
-                    };
-                    downloadItems.Add(downloadItem);
+                        Status = GetItemStatus(currentlyDownloadingFile.TransferState),
+                        Message = message,
+                        OutputPath = new OsPath(Path.Combine(
+                            completedDownloadsPath,
+                            currentlyDownloadingFile.FirstParentFolder)),
+                        CanBeRemoved = true,
+                    });
                 }
             }
 
-            return downloadItems;
+            return items;
         }
 
-        private bool IsConnectedLoggedIn(SlskdSettings settings)
+        public string Download(string searchId, string username, string downloadPath, SlskdSettings settings)
         {
-            var request = BuildRequest(settings, 1).Resource("/api/v0/application");
-            var response = ProcessRequest<Application>(request);
+            var request = BuildRequest(settings, $"/api/v0/searches/{searchId}")
+                .AddQueryParam("includeResponses", true);
 
-            return response.Server.IsConnected && response.Server.IsLoggedIn;
-        }
-
-        private int? GetFilePlaceInUserQueue(string username, string fileId, SlskdSettings settings)
-        {
-            var filePlaceInQueueRequest = BuildRequest(settings, 1)
-                .Resource($"/api/v0/transfers/downloads/{username}/{fileId}/position")
-                .Build();
-            int? position;
-            try
+            var result = ExecuteGet<SearchResult>(request);
+            if (result?.Responses == null)
             {
-                position = ProcessRequest<int>(filePlaceInQueueRequest);
-            }
-            catch (Exception)
-            {
-                throw new DownloadClientException("Error getting file position in queue from user: {0}, fileId: {1}", username, fileId);
+                throw new DownloadClientException($"Error adding item to Slskd: {searchId}");
             }
 
-            return position;
-        }
-
-        private UserDirectory GetUserDirectory(string username, string directory, SlskdSettings settings)
-        {
-            var userDirectory = new UserDirectoryRequest { DirectoryPath = directory };
-            var userDirectoryRequest = BuildRequest(settings, 1)
-                .Resource($"/api/v0/users/{username}/directory")
-                .Post()
-                .Build();
-            var json = userDirectory.ToJson();
-            userDirectoryRequest.Headers.ContentType = "application/json";
-            userDirectoryRequest.SetContent(json);
-            userDirectoryRequest.ContentSummary = json;
-            UserDirectory userDirectoryResult = null;
-
-            try
+            var userResponse = result.Responses.FirstOrDefault(r => r.Username == username);
+            if (userResponse?.Files == null)
             {
-                userDirectoryResult = ProcessRequest<UserDirectory>(userDirectoryRequest);
-            }
-            catch (Exception)
-            {
-                throw new DownloadClientException("Error getting download information from client: {0}", userDirectoryResult);
+                throw new DownloadClientException($"Error adding item to Slskd: {searchId}");
             }
 
-            foreach (var file in userDirectoryResult.Files)
+            var files = userResponse.Files.Where(f => f.ParentPath == downloadPath).ToList();
+            var audioFiles = files.FilterValidAudioFiles();
+            if (!audioFiles.Any())
             {
-                file.FileName = Path.Combine(userDirectoryResult.DirectoryPath, file.FileName);
+                throw new DownloadClientException($"No files found for path: {downloadPath}");
             }
 
-            return userDirectoryResult;
-        }
+            var downloadRequests = audioFiles.Select(file => new DownloadRequest { Filename = file.FileName, Size = file.Size }).ToList();
+            var downloadJson = downloadRequests.ToJson();
 
-        private UserStatus GetUserStatus(string username, SlskdSettings settings)
-        {
-            var userStatusRequest = BuildRequest(settings, 1)
-                .Resource($"/api/v0/users/{username}/status")
-                .Build();
-            userStatusRequest.Headers.ContentType = "application/json";
-            return ProcessRequest<UserStatus>(userStatusRequest);
+            var downloadRequest = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}").Post().Build();
+            downloadRequest.RequestTimeout = TimeSpan.FromMinutes(5);
+            Execute(downloadRequest, downloadJson);
+            return $"{username}\\{downloadPath}";
         }
 
         public void RemoveFromQueue(string downloadId, bool deleteData, SlskdSettings settings)
         {
             var split = downloadId.Split('\\');
             var username = split[0];
-            var directoryPath = downloadId.Split('\\', 2)[1];
+            var directoryPath = string.Join("\\", split.Skip(1));
             var directoryName = split[^1];
-            var downloadsRequest = BuildRequest(settings, 1).Resource($"/api/v0/transfers/downloads/{username}");
-            var downloadQueue = ProcessRequest<DownloadsQueue>(downloadsRequest);
-            var downloadDirectory = downloadQueue.Directories.FirstOrDefault(q => q.Directory.StartsWith(directoryPath));
 
-            if (downloadDirectory == null || downloadDirectory.Files.Count == 0)
+            // Fetch the downloads queue for the user
+            DownloadsQueue downloadsQueue = null;
+            try
             {
+                downloadsQueue = ExecuteGet<DownloadsQueue>(BuildRequest(settings, $"/api/v0/transfers/downloads/{username}"));
+            }
+            catch (HttpException httpException)
+            {
+                if (httpException.Response.StatusCode == HttpStatusCode.NotFound)
+                {
+                    _logger.Warn($"User '{username}' not present in download queue. Skipping deletion.");
+                    return;
+                }
+
+                throw new DownloadClientException($"Error getting directory information: {directoryName}");
+            }
+
+            var downloadDirectory = downloadsQueue?.Directories.FirstOrDefault(dir => dir.Directory.StartsWith(directoryPath));
+            if (downloadDirectory == null)
+            {
+                _logger.Warn($"Directory '{directoryPath}' not found in the queue for user '{username}'.");
                 return;
             }
 
             foreach (var file in downloadDirectory.Files)
             {
+                // Cancel the file download
                 CancelUserDownloadFile(username, file.Id, false, settings);
+
+                if (!deleteData)
+                {
+                    continue;
+                }
+
+                // Wait for the file to be marked as completed before proceeding
+                WaitForFileCompleted(username, file.Id, settings);
+
+                // Remove the file if required
+                CancelUserDownloadFile(username, file.Id, true, settings);
             }
 
             if (!deleteData)
@@ -219,173 +193,173 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 return;
             }
 
-            foreach (var file in downloadDirectory.Files)
-            {
-                CancelUserDownloadFile(username, file.Id, true, settings);
-            }
-
+            // Use the API to check if the directory exists based on HTTP response code
             var base64Directory = FileProcessingUtils.Base64Encode(directoryName);
-            var removeDirectoryRequest = BuildRequest(settings, 0.01)
-                .Resource($"/api/v0/files/downloads/directories/{base64Directory}")
-                .AddQueryParam("remove", true)
-                .Build();
-            removeDirectoryRequest.Method = HttpMethod.Delete;
-            ProcessRequest(removeDirectoryRequest);
-        }
-
-        public string Download(string searchId, string username, string downloadPath, SlskdSettings settings)
-        {
-            var downloadUid = username + "\\" + downloadPath;
-
-            var request = BuildRequest(settings, 1)
-                .Resource($"/api/v0/searches/{searchId}")
-                .AddQueryParam("includeResponses", true);
-            var result = ProcessRequest<SearchResult>(request);
-
-            var downloadList = new List<DownloadRequest>();
-            if (result?.Responses == null || result.Responses.Count == 0)
-            {
-                throw new DownloadClientException("Error adding item to Slskd: {0}", downloadUid);
-            }
-
-            var userResponse = result.Responses.First(r => r.Username == username);
-            if (userResponse.Files == null || userResponse.Files.Count == 0)
-            {
-                throw new DownloadClientException("Error adding item to Slskd: {0}", downloadUid);
-            }
-
-            var files = userResponse.Files.Where(f => f.ParentPath == downloadPath).ToList();
-
-            downloadList.AddRange(files.Select(file => new DownloadRequest { Filename = file.FileName, Size = file.Size }));
-            var downloadRequest = BuildRequest(settings, 0.01)
-                .Resource($"/api/v0/transfers/downloads/{username}")
-                .Post()
-                .Build();
-            var json = downloadList.ToJson();
-            downloadRequest.Headers.ContentType = "application/json";
-            downloadRequest.SetContent(json);
-            downloadRequest.ContentSummary = json;
-            downloadRequest.RequestTimeout = new TimeSpan(0, 1, 0);
-            var downloadResult = string.Empty;
+            var directoryCheckRequest = BuildRequest(settings, $"/api/v0/files/downloads/directories/{base64Directory}");
+            HttpResponse response = null;
 
             try
             {
-                downloadResult = ProcessRequest(downloadRequest);
+                response = Execute(directoryCheckRequest);
             }
-            catch (Exception)
+            catch (HttpException httpException)
             {
-                throw new DownloadClientException("Error adding item to Slskd: {0}; {1}", downloadUid, downloadResult);
+                if (httpException.Response.StatusCode != HttpStatusCode.NotFound)
+                {
+                    throw new DownloadClientException($"Error getting directory information: {directoryName}");
+                }
+
+                _logger.Warn($"Directory '{directoryName}' does not exist on disk. Skipping deletion.");
+                return;
             }
 
-            _logger.Trace("Downloading item {0}", downloadUid);
-            return downloadUid;
+            if (response.StatusCode != HttpStatusCode.OK)
+            {
+                return;
+            }
+
+            var deleteRequest = BuildRequest(settings, $"/api/v0/files/downloads/directories/{base64Directory}");
+            deleteRequest.Method = HttpMethod.Delete;
+            try
+            {
+                Execute(deleteRequest);
+                _logger.Info($"Successfully deleted directory '{directoryName}'.");
+            }
+            catch (HttpException httpException)
+            {
+                _logger.Error($"Failed to delete directory '{directoryName}'.");
+                _logger.Trace(httpException);
+            }
+        }
+
+        private static HttpRequestBuilder BuildRequest(SlskdSettings settings, string resource)
+        {
+            return new HttpRequestBuilder(settings.UseSsl, settings.Host, settings.Port, settings.UrlBase)
+                .WithRateLimit(0.2)
+                .Resource(resource)
+                .Accept(HttpAccept.Json)
+                .SetHeader("X-API-Key", settings.ApiKey);
         }
 
         private void CancelUserDownloadFile(string username, string fileId, bool deleteFile, SlskdSettings settings)
         {
-            var cancelFileRequest = BuildRequest(settings, 0.01)
-                .Resource($"/api/v0/transfers/downloads/{username}/{fileId}")
-                .AddQueryParam("remove", deleteFile)
-                .Build();
-            cancelFileRequest.Method = HttpMethod.Delete;
-            ProcessRequest(cancelFileRequest);
-        }
+            var cancelRequest = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}/{fileId}")
+                .AddQueryParam("remove", deleteFile);
+            cancelRequest.Method = HttpMethod.Delete;
 
-        private static HttpRequestBuilder BuildRequest(SlskdSettings settings, double rateLimitSeconds)
-        {
-            var requestBuilder = new HttpRequestBuilder(settings.UseSsl, settings.Host, settings.Port, settings.UrlBase)
+            try
             {
-                LogResponseContent = true
-            };
-
-            // Add API key header
-            requestBuilder.Accept(HttpAccept.Json);
-            requestBuilder.SetHeader("X-API-Key", settings.ApiKey);
-            requestBuilder.WithRateLimit(rateLimitSeconds);
-
-            return requestBuilder;
+                Execute(cancelRequest);
+                _logger.Trace($"Canceled and removed file '{fileId}' for user '{username}'. DeleteFile: {deleteFile}");
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, $"Failed to cancel or remove file '{fileId}' for user '{username}'.");
+            }
         }
 
-        private TResult ProcessRequest<TResult>(HttpRequestBuilder requestBuilder)
-            where TResult : new()
+        private void WaitForFileCompleted(string username, string fileId, SlskdSettings settings)
         {
-            var responseContent = ProcessRequest(requestBuilder);
-            return Json.Deserialize<TResult>(responseContent);
+            var stopwatch = Stopwatch.StartNew();
+            var timeout = TimeSpan.FromSeconds(10); // Increased timeout for safety
+
+            while (stopwatch.Elapsed < timeout)
+            {
+                var fileRequest = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}/{fileId}").WithRateLimit(0.5);
+                var file = ExecuteGet<DirectoryFile>(fileRequest);
+
+                if (file.TransferState.State != TransferStateEnum.Completed)
+                {
+                    continue;
+                }
+
+                _logger.Trace($"File '{fileId}' for user '{username}' is marked as completed.");
+                return;
+            }
+
+            _logger.Warn($"Timeout waiting for file '{fileId}' to complete for user '{username}'.");
         }
 
-        private TResult ProcessRequest<TResult>(HttpRequest httpRequest)
-            where TResult : new()
+        private UserStatus GetUserStatus(string username, SlskdSettings settings)
         {
-            var responseContent = ProcessRequest(httpRequest);
-            return Json.Deserialize<TResult>(responseContent);
+            var userStatus = ExecuteGet<UserStatus>(BuildRequest(settings, $"/api/v0/users/{username}/status"));
+            return userStatus;
         }
 
-        private string ProcessRequest(HttpRequestBuilder requestBuilder)
+        private int GetFilePlaceInUserQueue(string username, string fileId, SlskdSettings settings)
+        {
+            var request = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}/{fileId}/position");
+            var response = Execute(request);
+            var position = Convert.ToInt32(response.Content);
+            return position;
+        }
+
+        private UserDirectory GetUserDirectory(string username, string directory, SlskdSettings settings)
+        {
+            var request = BuildRequest(settings, $"/api/v0/users/{username}/directory");
+            var directoryRequest = new UserDirectoryRequest { DirectoryPath = directory };
+            var userDirectory = ExecutePost<UserDirectory>(request, directoryRequest.ToJson());
+            foreach (var file in userDirectory.Files)
+            {
+                file.FileName = Path.Combine(userDirectory.DirectoryPath, file.FileName);
+            }
+
+            return userDirectory;
+        }
+
+        private T ExecuteGet<T>(HttpRequestBuilder requestBuilder)
+            where T : new()
+        {
+            var httpResponse = _httpClient.Get<T>(requestBuilder.Build());
+            return httpResponse.Resource;
+        }
+
+        private T ExecutePost<T>(HttpRequestBuilder requestBuilder, string content = null)
+            where T : new()
         {
             var request = requestBuilder.Build();
-
-            HttpResponse response;
-            try
+            if (content != null)
             {
-                response = _httpClient.Execute(request);
-            }
-            catch (HttpException ex)
-            {
-                throw new DownloadClientException("Failed to connect to Slskd, check your settings.", ex);
-            }
-            catch (WebException ex)
-            {
-                throw new DownloadClientException("Failed to connect to Slskd, please check your settings.", ex);
+                request.Headers.ContentType = "application/json";
+                request.SetContent(content);
             }
 
-            return response.Content;
+            var httpResponse = _httpClient.Post<T>(request);
+            return httpResponse.Resource;
         }
 
-        private string ProcessRequest(HttpRequest httpRequest)
+        private HttpResponse Execute(HttpRequestBuilder requestBuilder, string content = null)
         {
-            HttpResponse response;
-            try
+            var request = requestBuilder.Build();
+            if (content != null)
             {
-                response = _httpClient.Execute(httpRequest);
-            }
-            catch (HttpException ex)
-            {
-                throw new DownloadClientException("Failed to connect to Slskd, check your settings.", ex);
-            }
-            catch (WebException ex)
-            {
-                throw new DownloadClientException("Failed to connect to Slskd, please check your settings.", ex);
+                request.Headers.ContentType = "application/json";
+                request.SetContent(content);
             }
 
-            return response.Content;
+            return _httpClient.Execute(request);
+        }
+
+        private HttpResponse Execute(HttpRequest request, string content = null)
+        {
+            if (content != null)
+            {
+                request.Headers.ContentType = "application/json";
+                request.SetContent(content);
+            }
+
+            return _httpClient.Execute(request);
         }
 
         private static DownloadItemStatus GetItemStatus(TransferStates states)
         {
-            switch (states.State)
+            return states.State switch
             {
-                case TransferStateEnum.Completed:
-                    switch (states.Substate)
-                    {
-                        case TransferStateEnum.Succeeded:
-                            return DownloadItemStatus.Completed;
-                        case TransferStateEnum.Cancelled:
-                        case TransferStateEnum.Errored:
-                        case TransferStateEnum.Rejected:
-                            return DownloadItemStatus.Warning;
-                        default:
-                            return DownloadItemStatus.Warning;
-                    }
-
-                case TransferStateEnum.Requested:
-                case TransferStateEnum.Queued:
-                    return DownloadItemStatus.Queued;
-                case TransferStateEnum.Initializing:
-                case TransferStateEnum.InProgress:
-                    return DownloadItemStatus.Downloading;
-                default:
-                    return DownloadItemStatus.Warning;
-            }
+                TransferStateEnum.Completed when states.Substate == TransferStateEnum.Succeeded => DownloadItemStatus.Completed,
+                TransferStateEnum.Requested or TransferStateEnum.Queued => DownloadItemStatus.Queued,
+                TransferStateEnum.Initializing or TransferStateEnum.InProgress => DownloadItemStatus.Downloading,
+                _ => DownloadItemStatus.Warning
+            };
         }
     }
 }

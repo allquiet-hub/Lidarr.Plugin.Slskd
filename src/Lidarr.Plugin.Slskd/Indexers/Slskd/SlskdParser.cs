@@ -31,27 +31,26 @@ namespace NzbDrone.Core.Indexers.Slskd
 
         public IList<ReleaseInfo> ParseResponse(IndexerResponse indexerResponse)
         {
-            var torrentInfos = new List<ReleaseInfo>();
+            var searchRequest = Json.Deserialize<SearchRequest>(indexerResponse.HttpRequest.ContentSummary);
+            var searchResult = new HttpResponse<SearchResult>(indexerResponse.HttpResponse).Resource;
+            if (searchResult == null)
+            {
+                throw new Exception("Failed to parse search result.");
+            }
 
-            var jsonResponse = new HttpResponse<SearchResult>(indexerResponse.HttpResponse);
-            var searchRequest = Json.Deserialize(indexerResponse.HttpRequest.ContentSummary, typeof(SearchRequest)) as SearchRequest;
-            var searchResult = jsonResponse.Resource;
-            var searchId = searchResult.Id;
+            var searchTimeout = (searchRequest?.SearchTimeout ?? _settings.SearchTimeout) + 5; // Add 5 seconds buffer
+            WaitForSearchCompletion(searchResult.Id, searchTimeout * 1000);
 
-            var searchTimeout = searchRequest?.SearchTimeout ?? _settings.SearchTimeout;
-            searchTimeout += 5; // Add 5 seconds buffer
-            WaitForSearchCompletion(searchId, searchTimeout * 1000);
+            // Re-fetch the search result with responses
+            searchResult = GetSearchResult(searchResult.Id, includeResponses: true);
 
-            searchResult = GetSearchResult(searchId, includeResponses: true);
-            torrentInfos.AddRange(ToReleaseInfo(searchResult));
-
-            return torrentInfos.OrderByDescending(o => o.Size).ToArray();
+            // Convert results to ReleaseInfo
+            return ToReleaseInfo(searchResult).OrderByDescending(o => o.Size).ToArray();
         }
 
         private void WaitForSearchCompletion(string searchId, int timeout)
         {
             var stopwatch = Stopwatch.StartNew();
-
             while (stopwatch.ElapsedMilliseconds < timeout)
             {
                 var searchResult = GetSearchResult(searchId, includeResponses: false);
@@ -61,24 +60,23 @@ namespace NzbDrone.Core.Indexers.Slskd
                 }
             }
 
-            throw new TimeoutException("Search did not complete within the specified timeout.");
+            throw new TimeoutException($"Search {searchId} did not complete within the specified timeout.");
         }
 
         private SearchResult GetSearchResult(string searchId, bool includeResponses)
         {
             var request = RequestBuilder()
                 .Resource($"api/v0/searches/{searchId}")
-                .AddQueryParam("includeResponses", includeResponses.ToString().ToLower())
+                .AddQueryParam("includeResponses", includeResponses.ToString().ToLowerInvariant())
                 .Build();
 
-            var searchResult = new HttpResponse<SearchResult>(_httpClient.Execute(request)).Resource;
-            return searchResult ?? throw new Exception("Failed to query the search result.");
+            var response = _httpClient.Execute(request);
+            return new HttpResponse<SearchResult>(response).Resource ??
+                   throw new Exception("Failed to retrieve search result.");
         }
 
-        private IList<ReleaseInfo> ToReleaseInfo(SearchResult searchResult)
+        private IEnumerable<ReleaseInfo> ToReleaseInfo(SearchResult searchResult)
         {
-            var releaseInfos = new List<ReleaseInfo>();
-
             foreach (var response in searchResult.Responses)
             {
                 var groupedFiles = response.Files.GroupBy(file => file.ParentPath);
@@ -86,50 +84,37 @@ namespace NzbDrone.Core.Indexers.Slskd
                 foreach (var group in groupedFiles)
                 {
                     var files = group.ToList();
-                    var isSingleFileInParentDirectory = files.Count == 1;
+                    var isSingleFile = files.Count == 1;
 
                     FileProcessingUtils.EnsureFileExtensions(files);
 
-                    // Filter valid audio files
-                    var audioFiles = files
-                        .Where(file =>
-                            !string.IsNullOrEmpty(file.Extension) &&
-                            FileProcessingUtils.ValidAudioExtensions.Contains(file.Extension))
-                        .ToList();
+                    var audioFiles = files.FilterValidAudioFiles();
 
-                    // Skip if no valid audio files
                     if (!audioFiles.Any())
                     {
                         continue;
                     }
 
-                    var downloadUrl = isSingleFileInParentDirectory ? audioFiles.FirstOrDefault()?.FileName : audioFiles.FirstOrDefault()?.ParentPath;
-                    var title = FileProcessingUtils.BuildTitle(audioFiles);
-
-                    // Create and add ReleaseInfo objects
-                    var releaseInfo = new ReleaseInfo
+                    yield return new ReleaseInfo
                     {
                         Guid = Guid.NewGuid().ToString(),
-                        Title = title,
-                        DownloadUrl = downloadUrl,
+                        Title = FileProcessingUtils.BuildTitle(audioFiles),
+                        DownloadUrl = isSingleFile ? audioFiles[0]?.FileName : audioFiles[0]?.ParentPath,
                         InfoUrl = $"{_settings.BaseUrl}searches/{searchResult.Id}",
                         Size = audioFiles.Sum(f => f.Size),
                         Source = response.Username,
                         Origin = searchResult.Id,
                         DownloadProtocol = nameof(SlskdDownloadProtocol)
                     };
-                    releaseInfos.Add(releaseInfo);
                 }
             }
-
-            return releaseInfos;
         }
 
         private HttpRequestBuilder RequestBuilder()
         {
             return new HttpRequestBuilder(_settings.BaseUrl)
                 .Accept(HttpAccept.Json)
-                .WithRateLimit(1)
+                .WithRateLimit(1) // Optional: Ensure requests respect the rate limit
                 .SetHeader("X-API-Key", _settings.ApiKey);
         }
     }

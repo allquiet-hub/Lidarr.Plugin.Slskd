@@ -12,13 +12,15 @@ namespace NzbDrone.Core.Indexers.Slskd
         public SlskdIndexerSettings Settings { get; init; }
         public Logger Logger { get; set; }
 
+        // Reusable HttpRequestBuilder to avoid re-initialization for every request
+        private HttpRequestBuilder HttpRequestBuilder => new HttpRequestBuilder(Settings.BaseUrl)
+            .Accept(HttpAccept.Json)
+            .SetHeader("X-API-Key", Settings.ApiKey);
+
         public IndexerPageableRequestChain GetRecentRequests()
         {
             var pageableRequests = new IndexerPageableRequestChain();
-
-            var requests = GetRequests("Silent Partner Chances", searchTimeout: 2);
-            pageableRequests.Add(requests);
-
+            pageableRequests.Add(GetRequests("no copyright music", searchTimeout: 2));
             return pageableRequests;
         }
 
@@ -35,32 +37,30 @@ namespace NzbDrone.Core.Indexers.Slskd
 
         public IndexerPageableRequestChain GetSearchRequests(ArtistSearchCriteria searchCriteria)
         {
-            var chain = new IndexerPageableRequestChain();
-            return chain;
+            return new IndexerPageableRequestChain();
         }
 
         private IEnumerable<IndexerRequest> GetRequests(string searchParameters, int? searchTimeout = null)
         {
-            searchTimeout = searchTimeout == null ? Settings.SearchTimeout * 1000 : searchTimeout.Value * 1000;
-            var searchRequest = new SearchRequest(searchParameters, searchTimeout)
+            searchTimeout ??= Settings.SearchTimeout * 1000; // Default to settings timeout
+            var searchRequest = new SearchRequest()
             {
-                //MB/s to B/s
-                MinimumPeerUploadSpeed = Settings.MinimumPeerUploadSpeed * 1024 * 1024
+                SearchText = searchParameters,
+                SearchTimeout = searchTimeout.Value,
+                MinimumPeerUploadSpeed = Settings.MinimumPeerUploadSpeed * 1024 * 1024, // Convert MB/s to B/s
             };
 
-            var request = RequestBuilder("api/v0/searches", searchRequest);
+            var request = BuildSearchRequest(searchRequest);
             yield return new IndexerRequest(request);
         }
 
-        private HttpRequest RequestBuilder(string resource, SearchRequest searchRequest)
+        private HttpRequest BuildSearchRequest(SearchRequest searchRequest)
         {
-            var request = new HttpRequestBuilder(Settings.BaseUrl)
-                .Resource(resource)
-                .Accept(HttpAccept.Json)
-                .SetHeader("X-API-Key", Settings.ApiKey)
+            var json = searchRequest.ToJson();
+            var request = HttpRequestBuilder
+                .Resource("api/v0/searches")
                 .Post()
                 .Build();
-            var json = searchRequest.ToJson();
             request.Headers.ContentType = "application/json";
             request.SetContent(json);
             request.ContentSummary = json;

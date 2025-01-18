@@ -11,5 +11,5 @@ public class UserStatus
     public string Presence { get; set; }
 
     [JsonIgnore]
-    public bool IsOnline => Presence == "Online";
+    public bool IsOnline => Presence is "Online" or "Away";
 }
