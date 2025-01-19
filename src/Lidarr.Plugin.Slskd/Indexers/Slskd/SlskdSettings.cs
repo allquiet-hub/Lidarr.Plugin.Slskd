@@ -34,7 +34,7 @@ namespace NzbDrone.Core.Indexers.Slskd
         [FieldDefinition(4, Type = FieldType.Number, Label = "Minimum download speed", Unit = "MB/s", HelpText = "ALl the users uploading at a lower speed will be filtered out", Advanced = true)]
         public int? MinimumPeerUploadSpeed { get; set; } = 1;
 
-        [FieldDefinition(5, Type = FieldType.KeyValueList, Label = "Ignored Users", HelpText = "All the users to be ignored when searching for media. Ideally you should input first your own username, to avoid redownloading stuff you arleady have. For Key you should use an incremental number.", Advanced = true)]
+        [FieldDefinition(5, Type = FieldType.KeyValueList, Label = "Ignored Users", HelpText = "All the users to be ignored when searching for media. Ideally you should input first your own username, to avoid redownloading stuff you arleady have. For Key you should use an incremental number.")]
         public IEnumerable<KeyValuePair<string, string>> IgnoredUsers { get; set; }
 
         public NzbDroneValidationResult Validate()
