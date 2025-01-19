@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using NLog;
 using NzbDrone.Common.Http;
 using NzbDrone.Common.Serializer;
@@ -27,9 +28,12 @@ namespace NzbDrone.Core.Indexers.Slskd
         public IndexerPageableRequestChain GetSearchRequests(AlbumSearchCriteria searchCriteria)
         {
             var chain = new IndexerPageableRequestChain();
-            if (searchCriteria != null)
+            var albumsMinimumTrackCount = searchCriteria.Albums.First().AlbumReleases.Value.OrderBy(r => r.TrackCount).First().TrackCount;
+            var artistMetadata = searchCriteria.Artist.Metadata.Value;
+            chain.AddTier(GetRequests($"{searchCriteria.ArtistQuery} {searchCriteria.CleanAlbumQuery}", trackCount: albumsMinimumTrackCount));
+            foreach (var alias in artistMetadata.Aliases)
             {
-                chain.AddTier(GetRequests($"{searchCriteria.ArtistQuery} {searchCriteria.AlbumQuery}"));
+                chain.AddTier(GetRequests($"{alias} {searchCriteria.CleanAlbumQuery}", trackCount: albumsMinimumTrackCount));
             }
 
             return chain;
@@ -40,7 +44,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             return new IndexerPageableRequestChain();
         }
 
-        private IEnumerable<IndexerRequest> GetRequests(string searchParameters, int? searchTimeout = null, int? uploadSpeed = null)
+        private IEnumerable<IndexerRequest> GetRequests(string searchParameters, int? searchTimeout = null, int? uploadSpeed = null, int trackCount = 0)
         {
             searchTimeout ??= Settings.SearchTimeout * 1000; // Default to settings timeout
             uploadSpeed ??= Settings.MinimumPeerUploadSpeed;
@@ -54,6 +58,13 @@ namespace NzbDrone.Core.Indexers.Slskd
             {
                 searchRequest.MinimumPeerUploadSpeed = uploadSpeed * 1024 * 1024; // Convert MB/s to B/s
             }
+
+            if (trackCount > 0)
+            {
+                searchRequest.MinimumResponseFileCount = trackCount;
+            }
+
+            searchRequest.FilterResponses = true;
 
             var request = BuildSearchRequest(searchRequest);
             yield return new IndexerRequest(request);
