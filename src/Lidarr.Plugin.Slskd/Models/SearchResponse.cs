@@ -18,7 +18,7 @@ public class SearchResponse
     public int QueueLength { get; set; }
 
     [JsonProperty("uploadSpeed")]
-    public int UploadSpeed { get; set; }
+    public long UploadSpeed { get; set; }
 
     [JsonProperty("fileCount")]
     public int FileCount { get; set; }

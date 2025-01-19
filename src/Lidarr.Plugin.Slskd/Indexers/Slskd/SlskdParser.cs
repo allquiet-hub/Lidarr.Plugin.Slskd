@@ -101,13 +101,16 @@ namespace NzbDrone.Core.Indexers.Slskd
                         continue;
                     }
 
+                    var totalSize = audioFiles.Sum(file => file.Size);
+
                     yield return new ReleaseInfo
                     {
                         Guid = Guid.NewGuid().ToString(),
                         Title = FileProcessingUtils.BuildTitle(audioFiles),
+                        PublishDate = DateTime.Now.AddSeconds(totalSize / response.UploadSpeed),
                         DownloadUrl = isSingleFile ? audioFiles[0]?.FileName : audioFiles[0]?.ParentPath,
                         InfoUrl = $"{_settings.BaseUrl}searches/{searchResult.Id}",
-                        Size = audioFiles.Sum(f => f.Size),
+                        Size = totalSize,
                         Source = response.Username,
                         Origin = searchResult.Id,
                         DownloadProtocol = nameof(SlskdDownloadProtocol)
