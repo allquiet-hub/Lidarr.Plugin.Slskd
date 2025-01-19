@@ -59,7 +59,7 @@ namespace NzbDrone.Core.Indexers.Slskd
                 searchRequest.MinimumPeerUploadSpeed = uploadSpeed * 1024 * 1024; // Convert MB/s to B/s
             }
 
-            if (trackCount > 0)
+            if (Settings.IgnoreResultsWithLessFilesThanAlbum && trackCount > 0)
             {
                 searchRequest.MinimumResponseFileCount = trackCount;
             }

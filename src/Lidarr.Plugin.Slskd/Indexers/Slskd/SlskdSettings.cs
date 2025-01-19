@@ -32,10 +32,13 @@ namespace NzbDrone.Core.Indexers.Slskd
         public int SearchTimeout { get; set; } = 15;
 
         [FieldDefinition(4, Type = FieldType.Number, Label = "Minimum download speed", Unit = "MB/s", HelpText = "ALl the users uploading at a lower speed will be filtered out", Advanced = true)]
-        public int? MinimumPeerUploadSpeed { get; set; } = 1;
+        public int MinimumPeerUploadSpeed { get; set; } = 1;
 
         [FieldDefinition(5, Type = FieldType.KeyValueList, Label = "Ignored Users", HelpText = "All the users to be ignored when searching for media. Ideally you should input first your own username, to avoid redownloading stuff you arleady have. For Key you should use an incremental number.")]
         public IEnumerable<KeyValuePair<string, string>> IgnoredUsers { get; set; }
+
+        [FieldDefinition(6, Type = FieldType.Checkbox, Label = "Ignore results with less files than the album release with least tracks", HelpText = "Example: if an album has a single release with 15 tracks, all results with 14 or less files will be filtered out", Advanced = true)]
+        public bool IgnoreResultsWithLessFilesThanAlbum { get; set; }
 
         public NzbDroneValidationResult Validate()
         {

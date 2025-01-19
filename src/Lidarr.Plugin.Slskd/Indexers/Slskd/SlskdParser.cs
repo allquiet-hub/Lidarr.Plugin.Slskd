@@ -45,7 +45,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             searchResult = GetSearchResult(searchResult.Id, includeResponses: true);
 
             // Convert results to ReleaseInfo
-            return ToReleaseInfo(searchResult).OrderByDescending(o => o.Size).ToArray();
+            return ToReleaseInfo(searchResult, searchRequest?.MinimumResponseFileCount).OrderByDescending(o => o.Size).ToArray();
         }
 
         private void WaitForSearchCompletion(string searchId, int timeout)
@@ -75,7 +75,7 @@ namespace NzbDrone.Core.Indexers.Slskd
                    throw new Exception("Failed to retrieve search result.");
         }
 
-        private IEnumerable<ReleaseInfo> ToReleaseInfo(SearchResult searchResult)
+        private IEnumerable<ReleaseInfo> ToReleaseInfo(SearchResult searchResult, int? minimumFileCountInRelease)
         {
             foreach (var response in searchResult.Responses)
             {
@@ -98,6 +98,13 @@ namespace NzbDrone.Core.Indexers.Slskd
 
                     if (!audioFiles.Any())
                     {
+                        _logger.Debug($"Ignored result {group.Key} from user {response.Username} because no audio files were found.");
+                        continue;
+                    }
+
+                    if (minimumFileCountInRelease != null && audioFiles.Count < minimumFileCountInRelease)
+                    {
+                        _logger.Debug($"Ignored result {group.Key} from user {response.Username} because {group.Count()} audio files did not meet the minimum requirement of {minimumFileCountInRelease}.");
                         continue;
                     }
 
