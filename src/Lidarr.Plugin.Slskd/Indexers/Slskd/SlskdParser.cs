@@ -79,6 +79,12 @@ namespace NzbDrone.Core.Indexers.Slskd
         {
             foreach (var response in searchResult.Responses)
             {
+                if (_settings.IgnoredUsers.Any(u => u.Value == response.Username))
+                {
+                    _logger.Info($"Ignored response from user {response.Username}.");
+                    continue;
+                }
+
                 var groupedFiles = response.Files.GroupBy(file => file.ParentPath);
 
                 foreach (var group in groupedFiles)
