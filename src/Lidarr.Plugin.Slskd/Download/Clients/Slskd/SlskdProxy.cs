@@ -61,7 +61,11 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                     var currentlyDownloadingFile = FileProcessingUtils.GetCurrentlyDownloadingFile(audioFiles);
                     var totalSize = audioFiles.Sum(file => file.Size);
                     var remainingSize = audioFiles.Sum(file => file.BytesRemaining);
-
+                    var averageSpeed = audioFiles
+                        .Where(file => file.BytesTransferred > 0)
+                        .Select(file => file.AverageSpeed)
+                        .DefaultIfEmpty(0) // Handles case where no files meet the condition
+                        .Average();
                     var message = $"Downloaded from user {queue.Username}";
 
                     if (audioFiles.All(f => f.TransferState.State == TransferStateEnum.Completed))
@@ -96,7 +100,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                         }
                     }
 
-                    items.Add(new DownloadClientItem
+                    var downloadClientItem = new DownloadClientItem
                     {
                         DownloadId = $"{queue.Username}\\{directory.Directory}",
                         Title = FileProcessingUtils.BuildTitle(audioFiles),
@@ -108,7 +112,13 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                             completedDownloadsPath,
                             currentlyDownloadingFile.FirstParentFolder)),
                         CanBeRemoved = true,
-                    });
+                    };
+                    if (averageSpeed > 0 && totalSize > 0)
+                    {
+                        downloadClientItem.RemainingTime = TimeSpan.FromSeconds(totalSize / averageSpeed);
+                    }
+
+                    items.Add(downloadClientItem);
                 }
             }
 
