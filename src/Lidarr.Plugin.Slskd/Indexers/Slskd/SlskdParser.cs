@@ -91,11 +91,8 @@ namespace NzbDrone.Core.Indexers.Slskd
                 {
                     var files = group.ToList();
                     var isSingleFile = files.Count == 1;
-
                     FileProcessingUtils.EnsureFileExtensions(files);
-
                     var audioFiles = files.FilterValidAudioFiles();
-
                     if (!audioFiles.Any())
                     {
                         _logger.Debug($"Ignored result {group.Key} from user {response.Username} because no audio files were found.");

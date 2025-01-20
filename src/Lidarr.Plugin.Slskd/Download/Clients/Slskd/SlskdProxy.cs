@@ -166,7 +166,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             var directoryName = split[^1];
 
             // Fetch the downloads queue for the user
-            DownloadsQueue downloadsQueue = null;
+            DownloadsQueue downloadsQueue;
             try
             {
                 downloadsQueue = ExecuteGet<DownloadsQueue>(BuildRequest(settings, $"/api/v0/transfers/downloads/{username}"));
@@ -214,7 +214,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             // Use the API to check if the directory exists based on HTTP response code
             var base64Directory = FileProcessingUtils.Base64Encode(directoryName);
             var directoryCheckRequest = BuildRequest(settings, $"/api/v0/files/downloads/directories/{base64Directory}");
-            HttpResponse response = null;
+            HttpResponse response;
 
             try
             {

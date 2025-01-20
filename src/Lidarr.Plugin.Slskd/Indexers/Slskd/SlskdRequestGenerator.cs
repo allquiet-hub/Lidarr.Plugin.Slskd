@@ -31,22 +31,21 @@ namespace NzbDrone.Core.Indexers.Slskd
         public IndexerPageableRequestChain GetSearchRequests(AlbumSearchCriteria searchCriteria)
         {
             var chain = new IndexerPageableRequestChain();
-            var albumsMinimumTrackCount = searchCriteria.Albums.First().AlbumReleases.Value.OrderBy(r => r.TrackCount).First().TrackCount;
-            var artistMetadata = searchCriteria.Artist.Metadata.Value;
+            var albumReleases = searchCriteria.Albums.First().AlbumReleases;
+            var albumsMinimumTrackCount = 0;
+            if (albumReleases?.Value != null && albumReleases.Value.Any())
+            {
+                albumsMinimumTrackCount = searchCriteria.Albums.First().AlbumReleases.Value.OrderBy(r => r.TrackCount).First().TrackCount;
+            }
 
+            var artistMetadata = searchCriteria.Artist.Metadata.Value;
             if (VariousArtistIds.ContainsIgnoreCase(searchCriteria.Artist.ForeignArtistId) || VariousArtistNames.ContainsIgnoreCase(searchCriteria.Artist.Name))
             {
-                if (Settings.SearchResultsWithLessFilesThanAlbumFirst)
-                {
-                    chain.AddTier(GetRequests($"{searchCriteria.ArtistQuery} {searchCriteria.AlbumQuery}", trackCount: albumsMinimumTrackCount));
-                }
-
-                chain.AddTier(GetRequests($"{searchCriteria.ArtistQuery} {searchCriteria.AlbumQuery}"));
-                Logger.Debug("Searching for various artists, ignoring aliases");
+                Logger.Debug("Searching for various artists, ignoring artist search, skip to album search");
             }
             else
             {
-                if (Settings.SearchResultsWithLessFilesThanAlbumFirst)
+                if (albumsMinimumTrackCount > 0 && Settings.SearchResultsWithLessFilesThanAlbumFirst)
                 {
                     chain.AddTier();
                     chain.Add(GetRequests($"{searchCriteria.ArtistQuery} {searchCriteria.AlbumQuery}", trackCount: albumsMinimumTrackCount));
@@ -64,7 +63,7 @@ namespace NzbDrone.Core.Indexers.Slskd
                 }
             }
 
-            if (Settings.SearchResultsWithLessFilesThanAlbumFirst)
+            if (albumsMinimumTrackCount > 0 && Settings.SearchResultsWithLessFilesThanAlbumFirst)
             {
                 chain.AddTier(GetRequests($"{searchCriteria.CleanAlbumQuery}", trackCount: albumsMinimumTrackCount));
                 chain.AddTier(GetRequests($"{searchCriteria.AlbumQuery}", trackCount: albumsMinimumTrackCount));
