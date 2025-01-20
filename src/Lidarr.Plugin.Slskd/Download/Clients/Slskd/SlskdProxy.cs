@@ -132,7 +132,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 throw new DownloadClientException($"Error adding item to Slskd: {searchId}");
             }
 
-            var files = userResponse.Files.Where(f => f.ParentPath == downloadPath).ToList();
+            var files = userResponse.Files.Where(f => f.FileName == downloadPath || f.ParentPath == downloadPath).ToList();
             var audioFiles = files.FilterValidAudioFiles();
             if (!audioFiles.Any())
             {
