@@ -111,7 +111,7 @@ namespace NzbDrone.Core.Indexers.Slskd
                     var totalSize = audioFiles.Sum(file => file.Size);
                     var releaseInfo = new ReleaseInfo
                     {
-                        Guid = Guid.NewGuid().ToString(),
+                        Guid = $"{response.Username}\\{group.Key}",
                         Title = FileProcessingUtils.BuildTitle(audioFiles),
                         DownloadUrl = isSingleFile ? audioFiles[0]?.FileName : audioFiles[0]?.ParentPath,
                         InfoUrl = $"{_settings.BaseUrl}searches/{searchResult.Id}",
