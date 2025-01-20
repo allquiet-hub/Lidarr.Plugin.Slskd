@@ -34,14 +34,15 @@ namespace NzbDrone.Core.Indexers.Slskd
             var albumsMinimumTrackCount = searchCriteria.Albums.First().AlbumReleases.Value.OrderBy(r => r.TrackCount).First().TrackCount;
             var artistMetadata = searchCriteria.Artist.Metadata.Value;
 
-            chain.AddTier(GetRequests($"{searchCriteria.ArtistQuery} {searchCriteria.AlbumQuery}", trackCount: albumsMinimumTrackCount));
+            chain.AddTier();
+            chain.Add(GetRequests($"{searchCriteria.ArtistQuery} {searchCriteria.AlbumQuery}", trackCount: albumsMinimumTrackCount));
 
             if (!VariousArtistIds.ContainsIgnoreCase(searchCriteria.Artist.ForeignArtistId) &&
                 !VariousArtistNames.ContainsIgnoreCase(searchCriteria.Artist.Name))
             {
                 foreach (var alias in artistMetadata.Aliases)
                 {
-                    chain.AddTier(GetRequests($"{alias} {searchCriteria.AlbumQuery}",
+                    chain.Add(GetRequests($"{alias} {searchCriteria.AlbumQuery}",
                         trackCount: albumsMinimumTrackCount));
                 }
             }
@@ -50,7 +51,10 @@ namespace NzbDrone.Core.Indexers.Slskd
                 Logger.Debug("Searching for various artists, ignoring aliases");
             }
 
-            chain.AddTier(GetRequests($"{searchCriteria.AlbumQuery}", trackCount: albumsMinimumTrackCount));
+            chain.AddTier();
+            chain.Add(GetRequests($"{searchCriteria.CleanAlbumQuery}", trackCount: albumsMinimumTrackCount));
+            chain.AddTier();
+            chain.Add(GetRequests($"{searchCriteria.AlbumQuery}", trackCount: albumsMinimumTrackCount));
 
             return chain;
         }
