@@ -2,7 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
-using NzbDrone.Common.EnsureThat;
+using NzbDrone.Common.Extensions;
 using NzbDrone.Plugin.Slskd.Models;
 
 namespace NzbDrone.Plugin.Slskd.Helpers;
@@ -92,14 +92,41 @@ public static class FileProcessingUtils
         var bitRate = DetermineBitRate(files);
         var sampleRateAndDepth = DetermineSampleRateAndDepth(files);
         var vbrOrCbr = DetermineVbr(files);
-        var isSingleFile = files?.Count == 1;
         var firstFile = files?.First();
 
         var titleBuilder = new StringBuilder();
-        var fileName = isSingleFile ? firstFile.Name.Replace($".{firstFile.Extension}", "", StringComparison.InvariantCulture) : null;
-        var parentFolder = (firstFile?.SecondParentFolder ?? firstFile?.FirstParentFolder)?.Replace('\\', ' ');
+        var folderToIgnore = new HashSet<string>()
+        {
+            "Soulseek", "Soulseek Downloads", "Soulseek Shared Folder", "FOR SOULSEEK", "soulseek to share",
+            "music_spotify", "SPOTIFY", "Downloaded Music", "Torrents",
+            "Musiques", "Muziek", "Music", "My Music", "MyMusic", "Muzika", "Music Box",
+            "Deezer", "Deezloader", "DEEMiX", "Albums", "Album", "Recordings", "beets",
+            "shared", "music-share", "unsorted", "media", "library", "new_music", "new music", "Saved Music",
+            "ARCHiVED_MUSiC", "ARCHiVED MUSiC"
+        };
+        var parts = firstFile?.ParentPath.Split('\\').Where(
+                s => !folderToIgnore.ContainsIgnoreCase(s) &&
+                     !ValidAudioExtensions.ContainsIgnoreCase(s) &&
+                     !ValidAudioExtensions.Any(ext => s.StartsWith(ext, StringComparison.InvariantCulture)) &&
+                     !s.StartsWith("@@", StringComparison.InvariantCulture) &&
+                     !s.StartsWith("_", StringComparison.InvariantCulture) &&
+                     !s.StartsWith("smb-share:", StringComparison.InvariantCulture) &&
+                     s.Length != 1)
+            .ToArray();
 
-        titleBuilder.AppendJoin(' ', parentFolder, fileName, codec, bitRate, sampleRateAndDepth, vbrOrCbr);
+        var fileName = firstFile?.Name.Replace($".{firstFile.Extension}", "", StringComparison.InvariantCulture);
+
+        // Single Parent folder
+        var firstParentFolder = parts?.Length > 0
+            ? parts[^1] // Single parent folder
+            : null;
+
+        // Parent folder: Two levels above the file
+        var secondParentFolder = parts?.Length > 1 && !parts[^1].Contains(parts[^2]) // Ensure last does not fully contain second-to-last
+            ? string.Join(" ", parts[^2..]) // Two directories above the file
+            : null;
+
+        titleBuilder.AppendJoin(' ', secondParentFolder ?? firstParentFolder ?? fileName, codec, bitRate, sampleRateAndDepth, vbrOrCbr);
         return titleBuilder.ToString().Trim();
     }
 
