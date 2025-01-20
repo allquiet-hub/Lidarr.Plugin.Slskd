@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using NLog;
+using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Http;
 using NzbDrone.Common.Serializer;
 using NzbDrone.Core.IndexerSearch.Definitions;
@@ -12,6 +13,8 @@ namespace NzbDrone.Core.Indexers.Slskd
     {
         public SlskdIndexerSettings Settings { get; init; }
         public Logger Logger { get; set; }
+        private static readonly List<string> VariousArtistIds = new List<string> { "89ad4ac3-39f7-470e-963a-56509c546377" };
+        private static readonly List<string> VariousArtistNames = new List<string> { "various artists", "various", "va", "unknown" };
 
         // Reusable HttpRequestBuilder to avoid re-initialization for every request
         private HttpRequestBuilder HttpRequestBuilder => new HttpRequestBuilder(Settings.BaseUrl)
@@ -30,11 +33,24 @@ namespace NzbDrone.Core.Indexers.Slskd
             var chain = new IndexerPageableRequestChain();
             var albumsMinimumTrackCount = searchCriteria.Albums.First().AlbumReleases.Value.OrderBy(r => r.TrackCount).First().TrackCount;
             var artistMetadata = searchCriteria.Artist.Metadata.Value;
-            chain.AddTier(GetRequests($"{searchCriteria.ArtistQuery} {searchCriteria.CleanAlbumQuery}", trackCount: albumsMinimumTrackCount));
-            foreach (var alias in artistMetadata.Aliases)
+
+            chain.AddTier(GetRequests($"{searchCriteria.Artist} {searchCriteria.AlbumQuery}", trackCount: albumsMinimumTrackCount));
+
+            if (!VariousArtistIds.ContainsIgnoreCase(searchCriteria.Artist.ForeignArtistId) &&
+                !VariousArtistNames.ContainsIgnoreCase(searchCriteria.Artist.Name))
             {
-                chain.AddTier(GetRequests($"{alias} {searchCriteria.CleanAlbumQuery}", trackCount: albumsMinimumTrackCount));
+                foreach (var alias in artistMetadata.Aliases)
+                {
+                    chain.AddTier(GetRequests($"{alias} {searchCriteria.AlbumQuery}",
+                        trackCount: albumsMinimumTrackCount));
+                }
             }
+            else
+            {
+                Logger.Debug("Searching for various artists, ignoring aliases");
+            }
+
+            chain.AddTier(GetRequests($"{searchCriteria.AlbumQuery}", trackCount: albumsMinimumTrackCount));
 
             return chain;
         }
