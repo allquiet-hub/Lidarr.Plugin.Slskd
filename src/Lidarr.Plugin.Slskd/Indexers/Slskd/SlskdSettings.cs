@@ -37,8 +37,8 @@ namespace NzbDrone.Core.Indexers.Slskd
         [FieldDefinition(5, Type = FieldType.KeyValueList, Label = "Ignored Users", HelpText = "All the users to be ignored when searching for media. Ideally you should input first your own username, to avoid redownloading stuff you arleady have. For Key you should use an incremental number.")]
         public IEnumerable<KeyValuePair<string, string>> IgnoredUsers { get; set; }
 
-        [FieldDefinition(6, Type = FieldType.Checkbox, Label = "Ignore results with less files than the album release with least tracks", HelpText = "Example: if an album has a single release with 15 tracks, all results with 14 or less files will be filtered out", Advanced = true)]
-        public bool IgnoreResultsWithLessFilesThanAlbum { get; set; }
+        [FieldDefinition(6, Type = FieldType.Checkbox, Label = "Search results with less files than the album release with least tracks first", HelpText = "Example: if an album has a single release with 15 tracks, all results with 14 or less files will be filtered out. If no releases are found with less tracks, it will fallback to finding releases with any amount of tracks", Advanced = true)]
+        public bool SearchResultsWithLessFilesThanAlbumFirst { get; set; }
 
         public NzbDroneValidationResult Validate()
         {
