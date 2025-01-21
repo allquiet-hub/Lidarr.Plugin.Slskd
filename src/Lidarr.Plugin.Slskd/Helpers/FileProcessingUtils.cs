@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using NzbDrone.Common.Extensions;
+using NzbDrone.Core.Download;
 using NzbDrone.Plugin.Slskd.Models;
 
 namespace NzbDrone.Plugin.Slskd.Helpers;
@@ -10,9 +11,28 @@ namespace NzbDrone.Plugin.Slskd.Helpers;
 // Shared utility class for common logic
 public static class FileProcessingUtils
 {
-    public static readonly HashSet<string> ValidAudioExtensions = new HashSet<string>
+    private static readonly HashSet<string> ValidAudioExtensions = new HashSet<string>
     {
         "flac", "alac", "wav", "ape", "ogg", "aac", "mp3", "wma", "m4a",
+    };
+    private static readonly HashSet<TransferStates> QueuedStates = new ()
+    {
+        TransferStates.None,
+        TransferStates.Requested,
+        TransferStates.Queued,
+    };
+    private static readonly HashSet<TransferStates> DownloadingStates = new ()
+    {
+        TransferStates.Initializing,
+        TransferStates.InProgress,
+    };
+    private static readonly HashSet<TransferSubStates> FailedSubStates = new ()
+    {
+        TransferSubStates.Cancelled,
+        TransferSubStates.TimedOut,
+        TransferSubStates.Errored,
+        TransferSubStates.Rejected,
+        TransferSubStates.Aborted
     };
 
     public static void EnsureFileExtensions<T>(List<T> files)
@@ -164,62 +184,39 @@ public static class FileProcessingUtils
         }
     }
 
-    public static DirectoryFile GetCurrentlyDownloadingFile(List<DirectoryFile> files)
+    public static (DownloadItemStatus, string) GetQueuedFilesStatus(List<DirectoryFile> files)
     {
-        // Group files by their transfer state
-        var groupedByState = files.GroupBy(file => file.TransferState.State)
-            .ToDictionary(g => g.Key, g => g.ToList());
-        DirectoryFile currentlyDownloadingFile;
-
-        // Prioritize the downloading state (InProgress)
-        if (groupedByState.TryGetValue(TransferStateEnum.InProgress, out var inProgressFiles))
+        if (files.Any(f => DownloadingStates.Contains(f.TransferState.State)))
         {
-            // If there are any files in progress, select the most recent one based on your ordering rules
-            currentlyDownloadingFile = inProgressFiles
-                .OrderBy(file => file.RequestedAt)
-                .ThenBy(file => file.EnqueuedAt)
-                .ThenBy(file => file.StartedAt)
-                .FirstOrDefault(); // No need for Last since InProgress is a priority
-        }
-        else if (groupedByState.TryGetValue(TransferStateEnum.Queued, out var queuedFiles))
-        {
-            // If there are any files in progress, select the most recent one based on your ordering rules
-            currentlyDownloadingFile = queuedFiles
-                .OrderBy(file => file.RequestedAt)
-                .ThenBy(file => file.EnqueuedAt)
-                .ThenBy(file => file.StartedAt)
-                .FirstOrDefault(); // No need for Last since InProgress is a priority
-        }
-        else if (groupedByState.TryGetValue(TransferStateEnum.Requested, out var requestedFiles))
-        {
-            // If there are any files in progress, select the most recent one based on your ordering rules
-            currentlyDownloadingFile = requestedFiles
-                .OrderBy(file => file.RequestedAt)
-                .ThenBy(file => file.EnqueuedAt)
-                .ThenBy(file => file.StartedAt)
-                .FirstOrDefault(); // No need for Last since InProgress is a priority
-        }
-        else if (groupedByState.Count == 1 && groupedByState.TryGetValue(TransferStateEnum.Completed, out var completedFiles))
-        {
-            // If no files are in progress, select the most recently completed file
-            currentlyDownloadingFile = completedFiles
-                .OrderBy(file => file.RequestedAt)
-                .ThenBy(file => file.EnqueuedAt)
-                .ThenBy(file => file.StartedAt)
-                .ThenBy(file => file.EndedAt)
-                .LastOrDefault(); // Choose the most recent completed file
-        }
-        else
-        {
-            // If no InProgress or Completed files exist, handle fallback
-            currentlyDownloadingFile = files
-                .OrderBy(file => file.RequestedAt)
-                .ThenBy(file => file.EnqueuedAt)
-                .ThenBy(file => file.StartedAt)
-                .LastOrDefault();
+            return (DownloadItemStatus.Downloading, null);
         }
 
-        return currentlyDownloadingFile;
+        if (files.Any(f => QueuedStates.Contains(f.TransferState.State)))
+        {
+            return (DownloadItemStatus.Queued, null);
+        }
+
+        if (files.All(f => f.TransferState.State == TransferStates.Completed && f.TransferState.SubState == TransferSubStates.Succeeded))
+        {
+            return (DownloadItemStatus.Completed, null);
+        }
+
+        if (files.All(f => f.TransferState.State == TransferStates.Completed
+                           && FailedSubStates.Contains(f.TransferState.SubState)))
+        {
+            return (DownloadItemStatus.Failed, $"All files in directory {files.First().ParentPath} from user {files.First().Username} have failed");
+        }
+
+        if (files.Any(f => f.TransferState.State == TransferStates.Completed && f.TransferState.SubState == TransferSubStates.Succeeded) &&
+            files.Any(f => FailedSubStates.Contains(f.TransferState.SubState)))
+        {
+            var completedFiles = files.Where(f => f.TransferState.State == TransferStates.Completed && f.TransferState.SubState == TransferSubStates.Succeeded);
+            var failedFiles = files.Where(f => FailedSubStates.Contains(f.TransferState.SubState));
+
+            return (DownloadItemStatus.Warning, $"{completedFiles.Count()} files downloaded, {failedFiles.Count()} failed, consider retrying the download from the slskd client");
+        }
+
+        return (DownloadItemStatus.Warning, null);
     }
 
     public static string Base64Encode(string plainText)

@@ -64,16 +64,16 @@ public class DirectoryFile : SlskdFile
             }
 
             var parts = value.Split(',', StringSplitOptions.TrimEntries);
-            TransferState = new TransferStates
+            TransferState = new TransferState
             {
-                State = Enum.Parse<TransferStateEnum>(parts[0], true),
-                Substate = parts.Length > 1 ? Enum.Parse<TransferStateEnum>(parts[1], true) : TransferStateEnum.None
+                State = Enum.Parse<TransferStates>(parts[0], true),
+                SubState = parts.Length > 1 ? Enum.Parse<TransferSubStates>(parts[1], true) : TransferSubStates.NoSubState
             };
         }
     }
 
     [JsonIgnore]
-    public TransferStates TransferState { get; set; }
+    public TransferState TransferState { get; set; }
 
     /// <summary>
     /// Gets the username of the peer to or from which the file is to be transferred.

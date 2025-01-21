@@ -1,7 +1,29 @@
 ﻿namespace NzbDrone.Plugin.Slskd.Models;
 
-public class TransferStates
+public enum TransferStates
 {
-    public TransferStateEnum State { get; set; }
-    public TransferStateEnum Substate { get; set; }
+    None,
+    Requested,
+    Queued,
+    Initializing,
+    InProgress,
+    Completed
+}
+
+public enum TransferSubStates
+{
+    // Only completed
+    Succeeded,
+    Cancelled,
+    TimedOut,
+    Errored,
+    Rejected,
+    Aborted,
+
+    // Only queued
+    Locally,
+    Remotely,
+
+    // Fake substate for the others
+    NoSubState
 }

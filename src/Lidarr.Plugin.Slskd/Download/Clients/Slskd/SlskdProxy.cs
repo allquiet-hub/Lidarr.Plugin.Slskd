@@ -58,31 +58,29 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                         return null;
                     }
 
-                    var currentlyDownloadingFile = FileProcessingUtils.GetCurrentlyDownloadingFile(audioFiles);
                     var totalSize = audioFiles.Sum(file => file.Size);
                     var remainingSize = audioFiles.Sum(file => file.BytesRemaining);
                     var averageSpeed = audioFiles
                         .Where(file => file.BytesTransferred > 0)
                         .Select(file => file.AverageSpeed)
-                        .DefaultIfEmpty(0) // Handles case where no files meet the condition
+                        .DefaultIfEmpty(1) // Handles case where no files meet the condition
                         .Average();
                     var message = $"Downloaded from user {queue.Username}";
 
-                    if (audioFiles.All(f => f.TransferState.State == TransferStateEnum.Completed))
+                    if (audioFiles.All(f => f.TransferState.State == TransferStates.Completed))
                     {
                         try
                         {
                             var userStatus = GetUserStatus(queue.Username, settings);
                             if (userStatus.IsOnline)
                             {
-                                var pendingFiles = directory.Files.Where(f => f.TransferState.State != TransferStateEnum.Completed).ToList();
+                                var pendingFiles = directory.Files.Where(
+                                    f => f.TransferState.State == TransferStates.Queued &&
+                                         f.TransferState.SubState == TransferSubStates.Remotely).ToList();
+
                                 var userDirectory = GetUserDirectory(queue.Username, directory.Directory, settings);
                                 FileProcessingUtils.CombineFilesWithMetadata(audioFiles, userDirectory.Files);
-                                if (pendingFiles.Any() && pendingFiles.All(f => f.TransferState == new TransferStates()
-                                    {
-                                        State = TransferStateEnum.Queued,
-                                        Substate = TransferStateEnum.Remotely
-                                    }))
+                                if (pendingFiles.Any())
                                 {
                                     var position = GetFilePlaceInUserQueue(queue.Username, pendingFiles.First().Id, settings);
                                     message = $"User {queue.Username} has queued your download, position {position}";
@@ -100,17 +98,23 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                         }
                     }
 
+                    var (status, statusMessage) = FileProcessingUtils.GetQueuedFilesStatus(audioFiles);
+                    if (statusMessage != null)
+                    {
+                        message = statusMessage;
+                    }
+
                     var downloadClientItem = new DownloadClientItem
                     {
                         DownloadId = $"{queue.Username}\\{directory.Directory}",
                         Title = FileProcessingUtils.BuildTitle(audioFiles),
                         TotalSize = totalSize,
                         RemainingSize = remainingSize,
-                        Status = GetItemStatus(currentlyDownloadingFile.TransferState),
+                        Status = status,
                         Message = message,
                         OutputPath = new OsPath(Path.Combine(
                             completedDownloadsPath,
-                            currentlyDownloadingFile.FirstParentFolder)),
+                            audioFiles.First().FirstParentFolder)),
                         CanBeRemoved = true,
                     };
                     if (averageSpeed > 0 && totalSize > 0)
@@ -286,7 +290,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 var fileRequest = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}/{fileId}").WithRateLimit(0.1);
                 var file = ExecuteGet<DirectoryFile>(fileRequest);
 
-                if (file.TransferState.State != TransferStateEnum.Completed)
+                if (file.TransferState.State != TransferStates.Completed)
                 {
                     continue;
                 }
@@ -367,17 +371,6 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             }
 
             return _httpClient.Execute(request);
-        }
-
-        private static DownloadItemStatus GetItemStatus(TransferStates states)
-        {
-            return states.State switch
-            {
-                TransferStateEnum.Completed when states.Substate == TransferStateEnum.Succeeded => DownloadItemStatus.Completed,
-                TransferStateEnum.Requested or TransferStateEnum.Queued => DownloadItemStatus.Queued,
-                TransferStateEnum.Initializing or TransferStateEnum.InProgress => DownloadItemStatus.Downloading,
-                _ => DownloadItemStatus.Warning
-            };
         }
     }
 }
