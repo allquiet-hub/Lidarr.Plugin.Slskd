@@ -11,7 +11,7 @@ namespace NzbDrone.Plugin.Slskd.Helpers;
 // Shared utility class for common logic
 public static class FileProcessingUtils
 {
-    private static readonly HashSet<string> ValidAudioExtensions = new HashSet<string>
+    public static readonly HashSet<string> ValidAudioExtensions = new HashSet<string>
     {
         "flac", "alac", "wav", "ape", "ogg", "aac", "mp3", "wma", "m4a",
     };

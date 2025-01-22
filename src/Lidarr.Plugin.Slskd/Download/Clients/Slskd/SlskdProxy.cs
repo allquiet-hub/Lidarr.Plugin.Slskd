@@ -167,8 +167,10 @@ namespace NzbDrone.Core.Download.Clients.Slskd
         {
             var split = downloadId.Split('\\');
             var username = split[0];
-            var directoryPath = string.Join("\\", split.Skip(1));
-            var directoryName = split[^1];
+            var idEndsWithExtension =
+                FileProcessingUtils.ValidAudioExtensions.Any(ext => downloadId.EndsWith($".{ext}"));
+            var directoryPath = string.Join("\\", idEndsWithExtension ? split[1..^2] : split[1..]);
+            var directoryName = idEndsWithExtension ? split[^2] : split[^1];
 
             // Fetch the downloads queue for the user
             DownloadsQueue downloadsQueue;
