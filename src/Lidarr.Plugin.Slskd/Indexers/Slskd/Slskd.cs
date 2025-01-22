@@ -15,7 +15,7 @@ namespace NzbDrone.Core.Indexers.Slskd
         public override bool SupportsRss => false;
         public override bool SupportsSearch => true;
         public override int PageSize => 100;
-        public override TimeSpan RateLimit => new TimeSpan(0);
+        public override TimeSpan RateLimit => TimeSpan.FromMilliseconds(50);
 
         private readonly ISlskdProxy _slskdProxy;
 

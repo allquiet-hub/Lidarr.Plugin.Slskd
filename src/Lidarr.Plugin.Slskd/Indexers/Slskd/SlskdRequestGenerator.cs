@@ -13,8 +13,8 @@ namespace NzbDrone.Core.Indexers.Slskd
     {
         public SlskdIndexerSettings Settings { get; init; }
         public Logger Logger { get; set; }
-        private static readonly List<string> VariousArtistIds = new List<string> { "89ad4ac3-39f7-470e-963a-56509c546377" };
-        private static readonly List<string> VariousArtistNames = new List<string> { "various artists", "various", "va", "unknown" };
+        private static readonly List<string> VariousArtistIds = new () { "89ad4ac3-39f7-470e-963a-56509c546377" };
+        private static readonly List<string> VariousArtistNames = new () { "various artists", "various", "va", "unknown" };
 
         // Reusable HttpRequestBuilder to avoid re-initialization for every request
         private HttpRequestBuilder HttpRequestBuilder => new HttpRequestBuilder(Settings.BaseUrl)

@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Threading;
 using NLog;
 using NzbDrone.Common.Disk;
 using NzbDrone.Common.Http;
@@ -67,37 +68,27 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                         .Average();
                     var message = $"Downloaded from user {queue.Username}";
 
-                    if (audioFiles.All(f => f.TransferState.State == TransferStates.Completed))
-                    {
-                        try
-                        {
-                            var userStatus = GetUserStatus(queue.Username, settings);
-                            if (userStatus.IsOnline)
-                            {
-                                var pendingFiles = directory.Files.Where(
-                                    f => f.TransferState.State == TransferStates.Queued &&
-                                         f.TransferState.SubState == TransferSubStates.Remotely).ToList();
-
-                                var userDirectory = GetUserDirectory(queue.Username, directory.Directory, settings);
-                                FileProcessingUtils.CombineFilesWithMetadata(audioFiles, userDirectory.Files);
-                                if (pendingFiles.Any())
-                                {
-                                    var position = GetFilePlaceInUserQueue(queue.Username, pendingFiles.First().Id, settings);
-                                    message = $"User {queue.Username} has queued your download, position {position}";
-                                }
-                            }
-                            else
-                            {
-                                message = $"User {queue.Username} is offline, cannot get media quality";
-                            }
-                        }
-                        catch (HttpException httpException)
-                        {
-                            _logger.Error(httpException.Message);
-                            continue;
-                        }
-                    }
-
+                    // if (audioFiles.All(f => f.TransferState.State == TransferStates.Completed))
+                    // {
+                    //     try
+                    //     {
+                    //         var userStatus = GetUserStatus(queue.Username, settings);
+                    //         if (userStatus.IsOnline)
+                    //         {
+                    //             var userDirectory = GetUserDirectory(queue.Username, directory.Directory, settings);
+                    //             FileProcessingUtils.CombineFilesWithMetadata(audioFiles, userDirectory.Files);
+                    //         }
+                    //         else
+                    //         {
+                    //             message = $"User {queue.Username} is offline, cannot get media quality";
+                    //         }
+                    //     }
+                    //     catch (HttpException httpException)
+                    //     {
+                    //         _logger.Error(httpException.Message);
+                    //         continue;
+                    //     }
+                    // }
                     var (status, statusMessage) = FileProcessingUtils.GetQueuedFilesStatus(audioFiles);
                     if (statusMessage != null)
                     {
@@ -118,7 +109,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                             audioFiles.First().FirstParentFolder)),
                         CanBeRemoved = true,
                     };
-                    if (averageSpeed > 0 && totalSize > 0)
+                    if (status == DownloadItemStatus.Downloading && averageSpeed > 0 && totalSize > 0)
                     {
                         downloadClientItem.RemainingTime = TimeSpan.FromSeconds(totalSize / averageSpeed);
                     }
@@ -260,7 +251,6 @@ namespace NzbDrone.Core.Download.Clients.Slskd
         private static HttpRequestBuilder BuildRequest(SlskdSettings settings, string resource)
         {
             return new HttpRequestBuilder(settings.UseSsl, settings.Host, settings.Port, settings.UrlBase)
-                .WithRateLimit(0.1)
                 .Resource(resource)
                 .Accept(HttpAccept.Json)
                 .SetHeader("X-API-Key", settings.ApiKey);
@@ -290,11 +280,12 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
             while (stopwatch.Elapsed < timeout)
             {
-                var fileRequest = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}/{fileId}").WithRateLimit(0.1);
+                var fileRequest = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}/{fileId}");
                 var file = ExecuteGet<DirectoryFile>(fileRequest);
 
                 if (file.TransferState.State != TransferStates.Completed)
                 {
+                    Thread.Sleep(20);
                     continue;
                 }
 

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading;
 using NLog;
 using NzbDrone.Common.Http;
 using NzbDrone.Common.Serializer;
@@ -58,6 +59,8 @@ namespace NzbDrone.Core.Indexers.Slskd
                 {
                     return;
                 }
+
+                Thread.Sleep(500);
             }
 
             throw new TimeoutException($"Search {searchId} did not complete within the specified timeout.");
@@ -132,7 +135,6 @@ namespace NzbDrone.Core.Indexers.Slskd
         {
             return new HttpRequestBuilder(_settings.BaseUrl)
                 .Accept(HttpAccept.Json)
-                .WithRateLimit(1) // Optional: Ensure requests respect the rate limit
                 .SetHeader("X-API-Key", _settings.ApiKey);
         }
     }
