@@ -90,9 +90,9 @@ namespace NzbDrone.Core.Indexers.Slskd
                 foreach (var group in groupedFiles)
                 {
                     var files = group.ToList();
-                    var isSingleFile = files.Count == 1;
                     FileProcessingUtils.EnsureFileExtensions(files);
                     var audioFiles = files.FilterValidAudioFiles();
+                    var isSingleFile = audioFiles.Count == 1;
                     if (!audioFiles.Any())
                     {
                         _logger.Debug($"Ignored result {group.Key} from user {response.Username} because no audio files were found.");
@@ -106,9 +106,10 @@ namespace NzbDrone.Core.Indexers.Slskd
                     }
 
                     var totalSize = audioFiles.Sum(file => file.Size);
+                    var downloadPath = audioFiles.Count == 0 ? audioFiles[0]?.FileName : group.Key;
                     var releaseInfo = new ReleaseInfo
                     {
-                        Guid = $"{response.Username}\\{group.Key}",
+                        Guid = $"{response.Username}\\{downloadPath}",
                         Title = FileProcessingUtils.BuildTitle(audioFiles),
                         DownloadUrl = isSingleFile ? audioFiles[0]?.FileName : audioFiles[0]?.ParentPath,
                         InfoUrl = $"{_settings.BaseUrl}searches/{searchResult.Id}",

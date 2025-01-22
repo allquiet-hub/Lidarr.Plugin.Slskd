@@ -104,9 +104,10 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                         message = statusMessage;
                     }
 
+                    var downloadPath = audioFiles.Count == 1 ? audioFiles[0]?.FileName : directory.Directory;
                     var downloadClientItem = new DownloadClientItem
                     {
-                        DownloadId = $"{queue.Username}\\{directory.Directory}",
+                        DownloadId = $"{queue.Username}\\{downloadPath}",
                         Title = FileProcessingUtils.BuildTitle(audioFiles),
                         TotalSize = totalSize,
                         RemainingSize = remainingSize,
