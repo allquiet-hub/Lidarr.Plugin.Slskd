@@ -34,6 +34,16 @@ public static class FileProcessingUtils
         TransferSubStates.Rejected,
         TransferSubStates.Aborted
     };
+    private static readonly Dictionary<string, bool> _extensionCache = new ();
+    private static readonly HashSet<string> _folderToIgnore = new (StringComparer.OrdinalIgnoreCase)
+    {
+        "Soulseek", "Soulseek Downloads", "Soulseek Shared Folder", "FOR SOULSEEK", "soulseek to share",
+        "music_spotify", "SPOTIFY", "Downloaded Music", "Torrents",
+        "Musiques", "Muziek", "Music", "My Music", "MyMusic", "Muzika", "Music Box",
+        "Deezer", "Deezloader", "DEEMiX", "Albums", "Album", "Recordings", "beets",
+        "shared", "music-share", "unsorted", "media", "library", "new_music", "new music", "Saved Music",
+        "ARCHiVED_MUSiC", "ARCHiVED MUSiC"
+    };
 
     public static void EnsureFileExtensions<T>(List<T> files)
         where T : SlskdFile
@@ -57,7 +67,21 @@ public static class FileProcessingUtils
         where T : SlskdFile
     {
         EnsureFileExtensions(files);
-        return files.Where(file => !string.IsNullOrEmpty(file.Extension) && ValidAudioExtensions.Contains(file.Extension)).ToList();
+        return files.Where(file =>
+        {
+            if (string.IsNullOrEmpty(file.Extension))
+            {
+                return false;
+            }
+
+            if (!_extensionCache.TryGetValue(file.Extension, out var isValid))
+            {
+                isValid = ValidAudioExtensions.Contains(file.Extension);
+                _extensionCache[file.Extension] = isValid;
+            }
+
+            return isValid;
+        }).ToList();
     }
 
     private static string DetermineCodec(IEnumerable<SlskdFile> files)
@@ -108,47 +132,46 @@ public static class FileProcessingUtils
     public static string BuildTitle<T>(List<T> files)
         where T : SlskdFile
     {
-        var codec = DetermineCodec(files);
-        var bitRate = DetermineBitRate(files);
-        var sampleRateAndDepth = DetermineSampleRateAndDepth(files);
-        var vbrOrCbr = DetermineVbr(files);
-        var firstFile = files?.First();
-
-        var titleBuilder = new StringBuilder();
-        var folderToIgnore = new HashSet<string>()
+        if (files == null || !files.Any())
         {
-            "Soulseek", "Soulseek Downloads", "Soulseek Shared Folder", "FOR SOULSEEK", "soulseek to share",
-            "music_spotify", "SPOTIFY", "Downloaded Music", "Torrents",
-            "Musiques", "Muziek", "Music", "My Music", "MyMusic", "Muzika", "Music Box",
-            "Deezer", "Deezloader", "DEEMiX", "Albums", "Album", "Recordings", "beets",
-            "shared", "music-share", "unsorted", "media", "library", "new_music", "new music", "Saved Music",
-            "ARCHiVED_MUSiC", "ARCHiVED MUSiC"
-        };
-        var parts = firstFile?.ParentPath.Split('\\').Where(
-                s => !folderToIgnore.ContainsIgnoreCase(s) &&
-                     !ValidAudioExtensions.ContainsIgnoreCase(s) &&
-                     !ValidAudioExtensions.Any(ext => s.StartsWith(ext, StringComparison.InvariantCulture)) &&
-                     !s.StartsWith("@@", StringComparison.InvariantCulture) &&
-                     !s.StartsWith("_", StringComparison.InvariantCulture) &&
-                     !s.StartsWith("smb-share:", StringComparison.InvariantCulture) &&
-                     s.Length != 1)
+            return string.Empty;
+        }
+
+        var firstFile = files.First();
+        var parts = firstFile.ParentPath.Split('\\')
+            .Where(s => !_folderToIgnore.Contains(s) &&
+                       !IsAudioExtension(s) &&
+                       !s.StartsWith("@@") &&
+                       !s.StartsWith("_") &&
+                       !s.StartsWith("smb-share:") &&
+                       s.Length > 1)
             .ToArray();
 
-        var fileName = firstFile?.Name.Replace($".{firstFile.Extension}", "", StringComparison.InvariantCulture);
+        var fileName = firstFile.Extension != null
+            ? firstFile.Name[..^(firstFile.Extension.Length + 1)]
+            : firstFile.Name;
 
-        // Single Parent folder
-        var firstParentFolder = parts?.Length > 0
-            ? parts[^1] // Single parent folder
-            : null;
+        var folderInfo = parts.Length switch
+        {
+            0 => fileName,
+            1 => parts[0],
+            _ => parts[^2].Contains(parts[^1]) ? parts[^2] : string.Join(" ", parts[^2..])
+        };
 
-        // Parent folder: Two levels above the file
-        var secondParentFolder = parts?.Length > 1 && !parts[^1].Contains(parts[^2]) // Ensure last does not fully contain second-to-last
-            ? string.Join(" ", parts[^2..]) // Two directories above the file
-            : null;
-
-        titleBuilder.AppendJoin(' ', secondParentFolder ?? firstParentFolder ?? fileName, codec, bitRate, sampleRateAndDepth, vbrOrCbr);
-        return titleBuilder.ToString().Trim();
+        return string.Join(" ", new[]
+        {
+            folderInfo,
+            DetermineCodec(files),
+            DetermineBitRate(files),
+            DetermineSampleRateAndDepth(files),
+            DetermineVbr(files)
+        }.Where(s => !string.IsNullOrEmpty(s)));
     }
+
+    private static bool IsAudioExtension(string s) =>
+        ValidAudioExtensions.Any(ext =>
+            s.Equals(ext, StringComparison.OrdinalIgnoreCase) ||
+            s.StartsWith(ext, StringComparison.OrdinalIgnoreCase));
 
     private static void EnsureFileExtensions(IEnumerable<SlskdFile> files)
     {
@@ -186,34 +209,45 @@ public static class FileProcessingUtils
 
     public static (DownloadItemStatus, string) GetQueuedFilesStatus(List<DirectoryFile> files)
     {
-        if (files.Any(f => DownloadingStates.Contains(f.TransferState.State)))
+        if (!files.Any())
+        {
+            return (DownloadItemStatus.Warning, null);
+        }
+
+        var states = files.Select(f => (f.TransferState.State, f.TransferState.SubState)).ToList();
+
+        if (states.Any(s => DownloadingStates.Contains(s.State)))
         {
             return (DownloadItemStatus.Downloading, null);
         }
 
-        if (files.Any(f => QueuedStates.Contains(f.TransferState.State)))
+        if (states.Any(s => QueuedStates.Contains(s.State)))
         {
             return (DownloadItemStatus.Queued, null);
         }
 
-        if (files.All(f => f.TransferState.State == TransferStates.Completed && f.TransferState.SubState == TransferSubStates.Succeeded))
+        var allCompleted = states.All(s => s.State == TransferStates.Completed);
+        if (allCompleted)
         {
-            return (DownloadItemStatus.Completed, null);
-        }
+            var allSucceeded = states.All(s => s.SubState == TransferSubStates.Succeeded);
+            if (allSucceeded)
+            {
+                return (DownloadItemStatus.Completed, null);
+            }
 
-        if (files.All(f => f.TransferState.State == TransferStates.Completed
-                           && FailedSubStates.Contains(f.TransferState.SubState)))
-        {
-            return (DownloadItemStatus.Failed, $"All files in directory {files.First().ParentPath} from user {files.First().Username} have failed");
-        }
+            var allFailed = states.All(s => FailedSubStates.Contains(s.SubState));
+            if (allFailed)
+            {
+                return (DownloadItemStatus.Failed, $"All files in directory {files[0].ParentPath} from user {files[0].Username} have failed");
+            }
 
-        if (files.Any(f => f.TransferState.State == TransferStates.Completed && f.TransferState.SubState == TransferSubStates.Succeeded) &&
-            files.Any(f => FailedSubStates.Contains(f.TransferState.SubState)))
-        {
-            var completedFiles = files.Where(f => f.TransferState.State == TransferStates.Completed && f.TransferState.SubState == TransferSubStates.Succeeded);
-            var failedFiles = files.Where(f => FailedSubStates.Contains(f.TransferState.SubState));
+            var succeededCount = states.Count(s => s.SubState == TransferSubStates.Succeeded);
+            var failedCount = states.Count(s => FailedSubStates.Contains(s.SubState));
 
-            return (DownloadItemStatus.Warning, $"{completedFiles.Count()} files downloaded, {failedFiles.Count()} failed, consider retrying the download from the slskd client");
+            if (succeededCount > 0 && failedCount > 0)
+            {
+                return (DownloadItemStatus.Warning, $"{succeededCount} files downloaded, {failedCount} failed, consider retrying the download from the slskd client");
+            }
         }
 
         return (DownloadItemStatus.Warning, null);

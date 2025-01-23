@@ -15,7 +15,7 @@ namespace NzbDrone.Core.Indexers.Slskd
         public override bool SupportsRss => false;
         public override bool SupportsSearch => true;
         public override int PageSize => 100;
-        public override TimeSpan RateLimit => TimeSpan.FromMilliseconds(50);
+        public override TimeSpan RateLimit => TimeSpan.FromMilliseconds(500);
 
         private readonly ISlskdProxy _slskdProxy;
 
@@ -33,11 +33,7 @@ namespace NzbDrone.Core.Indexers.Slskd
 
         public override IIndexerRequestGenerator GetRequestGenerator()
         {
-            return new SlskdRequestGenerator()
-            {
-                Settings = Settings,
-                Logger = _logger
-            };
+            return new SlskdRequestGenerator(_logger, Settings);
         }
 
         public override IParseIndexerResponse GetParser()

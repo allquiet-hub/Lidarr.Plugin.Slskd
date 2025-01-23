@@ -5,7 +5,6 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
-using System.Threading;
 using NLog;
 using NzbDrone.Common.Disk;
 using NzbDrone.Common.Http;
@@ -19,27 +18,30 @@ namespace NzbDrone.Core.Download.Clients.Slskd
     {
         private readonly IHttpClient _httpClient;
         private readonly Logger _logger;
+        private TimeSpan _rateLimit;
 
-        public SlskdProxy(IHttpClient httpClient = null, Logger logger = null)
+        public SlskdProxy(IHttpClient httpClient, Logger logger)
         {
             _httpClient = httpClient;
             _logger = logger;
+            _rateLimit = TimeSpan.FromMilliseconds(500);
         }
 
+        // Core Public Methods
         public bool TestConnectivity(SlskdSettings settings)
         {
-            var response = ExecuteGet<Application>(BuildRequest(settings, "/api/v0/application"));
+            var response = ExecuteGet<Application>(settings, BuildRequest(settings, "/api/v0/application"));
             return response?.Server.IsConnected == true && response.Server.IsLoggedIn;
         }
 
         public SlskdOptions GetOptions(SlskdSettings settings)
         {
-            return ExecuteGet<SlskdOptions>(BuildRequest(settings, "/api/v0/options"));
+            return ExecuteGet<SlskdOptions>(settings, BuildRequest(settings, "/api/v0/options"));
         }
 
         public List<DownloadClientItem> GetQueue(SlskdSettings settings)
         {
-            var downloadsQueues = ExecuteGet<List<DownloadsQueue>>(BuildRequest(settings, "/api/v0/transfers/downloads"));
+            var downloadsQueues = ExecuteGet<List<DownloadsQueue>>(settings, BuildRequest(settings, "/api/v0/transfers/downloads"));
             if (downloadsQueues == null)
             {
                 return new List<DownloadClientItem>();
@@ -56,7 +58,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
                     if (!audioFiles.Any())
                     {
-                        return null;
+                        continue;
                     }
 
                     var totalSize = audioFiles.Sum(file => file.Size);
@@ -68,27 +70,6 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                         .Average();
                     var message = $"Downloaded from user {queue.Username}";
 
-                    // if (audioFiles.All(f => f.TransferState.State == TransferStates.Completed))
-                    // {
-                    //     try
-                    //     {
-                    //         var userStatus = GetUserStatus(queue.Username, settings);
-                    //         if (userStatus.IsOnline)
-                    //         {
-                    //             var userDirectory = GetUserDirectory(queue.Username, directory.Directory, settings);
-                    //             FileProcessingUtils.CombineFilesWithMetadata(audioFiles, userDirectory.Files);
-                    //         }
-                    //         else
-                    //         {
-                    //             message = $"User {queue.Username} is offline, cannot get media quality";
-                    //         }
-                    //     }
-                    //     catch (HttpException httpException)
-                    //     {
-                    //         _logger.Error(httpException.Message);
-                    //         continue;
-                    //     }
-                    // }
                     var (status, statusMessage) = FileProcessingUtils.GetQueuedFilesStatus(audioFiles);
                     if (statusMessage != null)
                     {
@@ -126,10 +107,15 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             var request = BuildRequest(settings, $"/api/v0/searches/{searchId}")
                 .AddQueryParam("includeResponses", true);
 
-            var result = ExecuteGet<SearchResult>(request);
+            var result = ExecuteGet<SearchResult>(settings, request);
             if (result?.Responses == null)
             {
-                throw new DownloadClientException($"Error adding item to Slskd: {searchId}");
+                throw new DownloadClientException($"Error adding item to Slskd: Search result not found for {searchId}");
+            }
+
+            if (!result.Responses.Any())
+            {
+                throw new DownloadClientException($"Error adding item to Slskd: No responses received for {searchId}");
             }
 
             var userResponse = result.Responses.FirstOrDefault(r => r.Username == username);
@@ -148,15 +134,20 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             var downloadRequests = audioFiles.Select(file => new DownloadRequest { Filename = file.FileName, Size = file.Size }).ToList();
             var downloadJson = downloadRequests.ToJson();
 
-            var downloadRequest = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}").Post().Build();
-            downloadRequest.RequestTimeout = TimeSpan.FromMinutes(5);
-            Execute(downloadRequest, downloadJson);
+            var downloadRequest = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}")
+                .Post();
+            Execute(settings, downloadRequest, downloadJson);
             return $"{username}\\{downloadPath}";
         }
 
         public void RemoveFromQueue(string downloadId, bool deleteData, SlskdSettings settings)
         {
             var split = downloadId.Split('\\');
+            if (split.Length < 2)
+            {
+                throw new ArgumentException($@"Invalid downloadId format: {downloadId}", nameof(downloadId));
+            }
+
             var username = split[0];
             var idEndsWithExtension =
                 FileProcessingUtils.ValidAudioExtensions.Any(ext => downloadId.EndsWith($".{ext}"));
@@ -167,7 +158,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             DownloadsQueue downloadsQueue;
             try
             {
-                downloadsQueue = ExecuteGet<DownloadsQueue>(BuildRequest(settings, $"/api/v0/transfers/downloads/{username}"));
+                downloadsQueue = ExecuteGet<DownloadsQueue>(settings, BuildRequest(settings, $"/api/v0/transfers/downloads/{username}"));
             }
             catch (HttpException httpException)
             {
@@ -216,7 +207,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
             try
             {
-                response = Execute(directoryCheckRequest);
+                response = Execute(settings, directoryCheckRequest);
             }
             catch (HttpException httpException)
             {
@@ -238,7 +229,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             deleteRequest.Method = HttpMethod.Delete;
             try
             {
-                Execute(deleteRequest);
+                Execute(settings, deleteRequest);
                 _logger.Info($"Successfully deleted directory '{directoryName}'.");
             }
             catch (HttpException httpException)
@@ -248,6 +239,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             }
         }
 
+        // HTTP Request Helpers
         private static HttpRequestBuilder BuildRequest(SlskdSettings settings, string resource)
         {
             return new HttpRequestBuilder(settings.UseSsl, settings.Host, settings.Port, settings.UrlBase)
@@ -256,36 +248,48 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 .SetHeader("X-API-Key", settings.ApiKey);
         }
 
+        private T ExecuteGet<T>(SlskdSettings settings, HttpRequestBuilder requestBuilder)
+            where T : new()
+        {
+            var response = _httpClient.Get(requestBuilder.Build());
+            return Json.Deserialize<T>(response.Content);
+        }
+
+        private HttpResponse Execute(SlskdSettings settings, HttpRequestBuilder requestBuilder, string content = null)
+        {
+            var request = requestBuilder.Build();
+            if (content != null)
+            {
+                request.Headers.ContentType = "application/json";
+                request.SetContent(content);
+            }
+
+            return _httpClient.Execute(request);
+        }
+
         private void CancelUserDownloadFile(string username, string fileId, bool deleteFile, SlskdSettings settings)
         {
             var cancelRequest = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}/{fileId}")
                 .AddQueryParam("remove", deleteFile);
             cancelRequest.Method = HttpMethod.Delete;
 
-            try
-            {
-                Execute(cancelRequest);
-                _logger.Trace($"Canceled and removed file '{fileId}' for user '{username}'. DeleteFile: {deleteFile}");
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex, $"Failed to cancel or remove file '{fileId}' for user '{username}'.");
-            }
+            Execute(settings, cancelRequest);
+            _logger.Trace($"Canceled and removed file '{fileId}' for user '{username}'. DeleteFile: {deleteFile}");
         }
 
         private void WaitForFileCompleted(string username, string fileId, SlskdSettings settings)
         {
             var stopwatch = Stopwatch.StartNew();
-            var timeout = TimeSpan.FromSeconds(10); // Increased timeout for safety
+            var timeout = TimeSpan.FromSeconds(10);
 
             while (stopwatch.Elapsed < timeout)
             {
                 var fileRequest = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}/{fileId}");
-                var file = ExecuteGet<DirectoryFile>(fileRequest);
+                fileRequest.RateLimit = _rateLimit;
+                var file = ExecuteGet<DirectoryFile>(settings, fileRequest);
 
                 if (file.TransferState.State != TransferStates.Completed)
                 {
-                    Thread.Sleep(20);
                     continue;
                 }
 
@@ -294,77 +298,6 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             }
 
             _logger.Warn($"Timeout waiting for file '{fileId}' to complete for user '{username}'.");
-        }
-
-        private UserStatus GetUserStatus(string username, SlskdSettings settings)
-        {
-            var userStatus = ExecuteGet<UserStatus>(BuildRequest(settings, $"/api/v0/users/{username}/status"));
-            return userStatus;
-        }
-
-        private int GetFilePlaceInUserQueue(string username, string fileId, SlskdSettings settings)
-        {
-            var request = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}/{fileId}/position");
-            var response = Execute(request);
-            var position = Convert.ToInt32(response.Content);
-            return position;
-        }
-
-        private UserDirectory GetUserDirectory(string username, string directory, SlskdSettings settings)
-        {
-            var request = BuildRequest(settings, $"/api/v0/users/{username}/directory");
-            var directoryRequest = new UserDirectoryRequest { DirectoryPath = directory };
-            var userDirectory = ExecutePost<UserDirectory>(request, directoryRequest.ToJson());
-            foreach (var file in userDirectory.Files)
-            {
-                file.FileName = Path.Combine(userDirectory.DirectoryPath, file.FileName);
-            }
-
-            return userDirectory;
-        }
-
-        private T ExecuteGet<T>(HttpRequestBuilder requestBuilder)
-            where T : new()
-        {
-            var httpResponse = _httpClient.Get<T>(requestBuilder.Build());
-            return httpResponse.Resource;
-        }
-
-        private T ExecutePost<T>(HttpRequestBuilder requestBuilder, string content = null)
-            where T : new()
-        {
-            var request = requestBuilder.Build();
-            if (content != null)
-            {
-                request.Headers.ContentType = "application/json";
-                request.SetContent(content);
-            }
-
-            var httpResponse = _httpClient.Post<T>(request);
-            return httpResponse.Resource;
-        }
-
-        private HttpResponse Execute(HttpRequestBuilder requestBuilder, string content = null)
-        {
-            var request = requestBuilder.Build();
-            if (content != null)
-            {
-                request.Headers.ContentType = "application/json";
-                request.SetContent(content);
-            }
-
-            return _httpClient.Execute(request);
-        }
-
-        private HttpResponse Execute(HttpRequest request, string content = null)
-        {
-            if (content != null)
-            {
-                request.Headers.ContentType = "application/json";
-                request.SetContent(content);
-            }
-
-            return _httpClient.Execute(request);
         }
     }
 }
