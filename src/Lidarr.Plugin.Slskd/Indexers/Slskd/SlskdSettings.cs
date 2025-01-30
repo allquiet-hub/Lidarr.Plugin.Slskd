@@ -12,6 +12,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             RuleFor(c => c.BaseUrl).ValidRootUrl();
             RuleFor(c => c.ApiKey).NotEmpty();
             RuleFor(c => c.SearchTimeout).GreaterThan(0);
+            RuleFor(c => c.IgnoredUsers).NotEmpty();
         }
     }
 
