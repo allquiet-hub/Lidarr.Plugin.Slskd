@@ -30,18 +30,28 @@ namespace NzbDrone.Core.Download.Clients.Slskd
         // Core Public Methods
         public bool TestConnectivity(SlskdSettings settings)
         {
-            var response = ExecuteGet<Application>(settings, BuildRequest(settings, "/api/v0/application"));
+            var response = ExecuteGet<Application>(BuildRequest(settings, "/api/v0/application"));
             return response?.Server.IsConnected == true && response.Server.IsLoggedIn;
         }
 
         public SlskdOptions GetOptions(SlskdSettings settings)
         {
-            return ExecuteGet<SlskdOptions>(settings, BuildRequest(settings, "/api/v0/options"));
+            if (settings == null)
+            {
+                throw new ArgumentNullException(nameof(settings));
+            }
+
+            return ExecuteGet<SlskdOptions>(BuildRequest(settings, "/api/v0/options"));
         }
 
         public List<DownloadClientItem> GetQueue(SlskdSettings settings)
         {
-            var downloadsQueues = ExecuteGet<List<DownloadsQueue>>(settings, BuildRequest(settings, "/api/v0/transfers/downloads"));
+            if (settings == null)
+            {
+                throw new ArgumentNullException(nameof(settings));
+            }
+
+            var downloadsQueues = ExecuteGet<List<DownloadsQueue>>(BuildRequest(settings, "/api/v0/transfers/downloads"));
             if (downloadsQueues == null)
             {
                 return new List<DownloadClientItem>();
@@ -61,6 +71,8 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                         continue;
                     }
 
+                    var identifier = Crc32Hasher.Crc32Base64($"{queue.Username}{directory.Directory}");
+
                     var totalSize = audioFiles.Sum(file => file.Size);
                     var remainingSize = audioFiles.Sum(file => file.BytesRemaining);
                     var averageSpeed = audioFiles
@@ -76,10 +88,9 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                         message = statusMessage;
                     }
 
-                    var downloadPath = audioFiles.Count == 1 ? audioFiles[0]?.FileName : directory.Directory;
                     var downloadClientItem = new DownloadClientItem
                     {
-                        DownloadId = $"{queue.Username}\\{downloadPath}",
+                        DownloadId = identifier,
                         Title = FileProcessingUtils.BuildTitle(audioFiles),
                         TotalSize = totalSize,
                         RemainingSize = remainingSize,
@@ -104,10 +115,15 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
         public string Download(string searchId, string username, string downloadPath, SlskdSettings settings)
         {
+            if (settings == null)
+            {
+                throw new ArgumentNullException(nameof(settings));
+            }
+
             var request = BuildRequest(settings, $"/api/v0/searches/{searchId}")
                 .AddQueryParam("includeResponses", true);
 
-            var result = ExecuteGet<SearchResult>(settings, request);
+            var result = ExecuteGet<SearchResult>(request);
             if (result?.Responses == null)
             {
                 throw new DownloadClientException($"Error adding item to Slskd: Search result not found for {searchId}");
@@ -136,45 +152,36 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
             var downloadRequest = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}")
                 .Post();
-            Execute(settings, downloadRequest, downloadJson);
-            return $"{username}\\{downloadPath}";
+            Execute(downloadRequest, downloadJson);
+
+            var identifier = Crc32Hasher.Crc32Base64($"{username}{files[0].ParentPath}");
+            return identifier;
         }
 
         public void RemoveFromQueue(string downloadId, bool deleteData, SlskdSettings settings)
         {
-            var split = downloadId.Split('\\');
-            if (split.Length < 2)
+            if (settings == null)
             {
-                throw new ArgumentException($@"Invalid downloadId format: {downloadId}", nameof(downloadId));
+                throw new ArgumentNullException(nameof(settings));
             }
 
-            var username = split[0];
-            var idEndsWithExtension =
-                FileProcessingUtils.ValidAudioExtensions.Any(ext => downloadId.EndsWith($".{ext}"));
-            var directoryPath = string.Join("\\", idEndsWithExtension ? split[1..^2] : split[1..]);
-            var directoryName = idEndsWithExtension ? split[^2] : split[^1];
-
-            // Fetch the downloads queue for the user
-            DownloadsQueue downloadsQueue;
-            try
+            var queues = ExecuteGet<List<DownloadsQueue>>(BuildRequest(settings, "/api/v0/transfers/downloads"));
+            var username = string.Empty;
+            DownloadDirectory downloadDirectory = null;
+            foreach (var queue in queues)
             {
-                downloadsQueue = ExecuteGet<DownloadsQueue>(settings, BuildRequest(settings, $"/api/v0/transfers/downloads/{username}"));
-            }
-            catch (HttpException httpException)
-            {
-                if (httpException.Response.StatusCode == HttpStatusCode.NotFound)
+                foreach (var directory in
+                         queue.Directories.Where(directory =>
+                             Crc32Hasher.Crc32Base64($"{queue.Username}{directory.Directory}") == downloadId))
                 {
-                    _logger.Warn($"User '{username}' not present in download queue. Skipping deletion.");
-                    return;
+                    username = queue.Username;
+                    downloadDirectory = directory;
                 }
-
-                throw new DownloadClientException($"Error getting directory information: {directoryName}");
             }
 
-            var downloadDirectory = downloadsQueue?.Directories.FirstOrDefault(dir => dir.Directory.StartsWith(directoryPath));
             if (downloadDirectory == null)
             {
-                _logger.Warn($"Directory '{directoryPath}' not found in the queue for user '{username}'.");
+                _logger.Warn($"No user or directory found with matching hash.");
                 return;
             }
 
@@ -201,22 +208,22 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             }
 
             // Use the API to check if the directory exists based on HTTP response code
-            var base64Directory = FileProcessingUtils.Base64Encode(directoryName);
+            var base64Directory = FileProcessingUtils.Base64Encode(downloadDirectory.Directory);
             var directoryCheckRequest = BuildRequest(settings, $"/api/v0/files/downloads/directories/{base64Directory}");
             HttpResponse response;
 
             try
             {
-                response = Execute(settings, directoryCheckRequest);
+                response = Execute(directoryCheckRequest);
             }
             catch (HttpException httpException)
             {
                 if (httpException.Response.StatusCode != HttpStatusCode.NotFound)
                 {
-                    throw new DownloadClientException($"Error getting directory information: {directoryName}");
+                    throw new DownloadClientException($"Error getting directory information: {downloadDirectory.Directory}");
                 }
 
-                _logger.Warn($"Directory '{directoryName}' does not exist on disk. Skipping deletion.");
+                _logger.Warn($"Directory '{downloadDirectory.Directory}' does not exist on disk. Skipping deletion.");
                 return;
             }
 
@@ -229,12 +236,12 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             deleteRequest.Method = HttpMethod.Delete;
             try
             {
-                Execute(settings, deleteRequest);
-                _logger.Info($"Successfully deleted directory '{directoryName}'.");
+                Execute(deleteRequest);
+                _logger.Info($"Successfully deleted directory '{downloadDirectory.Directory}'.");
             }
             catch (HttpException httpException)
             {
-                _logger.Error($"Failed to delete directory '{directoryName}'.");
+                _logger.Error($"Failed to delete directory '{downloadDirectory.Directory}'.");
                 _logger.Trace(httpException);
             }
         }
@@ -248,14 +255,14 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 .SetHeader("X-API-Key", settings.ApiKey);
         }
 
-        private T ExecuteGet<T>(SlskdSettings settings, HttpRequestBuilder requestBuilder)
+        private T ExecuteGet<T>(HttpRequestBuilder requestBuilder)
             where T : new()
         {
             var response = _httpClient.Get(requestBuilder.Build());
             return Json.Deserialize<T>(response.Content);
         }
 
-        private HttpResponse Execute(SlskdSettings settings, HttpRequestBuilder requestBuilder, string content = null)
+        private HttpResponse Execute(HttpRequestBuilder requestBuilder, string content = null)
         {
             var request = requestBuilder.Build();
             if (content != null)
@@ -273,7 +280,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 .AddQueryParam("remove", deleteFile);
             cancelRequest.Method = HttpMethod.Delete;
 
-            Execute(settings, cancelRequest);
+            Execute(cancelRequest);
             _logger.Trace($"Canceled and removed file '{fileId}' for user '{username}'. DeleteFile: {deleteFile}");
         }
 

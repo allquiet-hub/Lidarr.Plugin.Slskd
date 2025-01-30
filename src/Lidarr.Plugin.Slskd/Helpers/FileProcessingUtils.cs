@@ -2,7 +2,6 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
-using NzbDrone.Common.Extensions;
 using NzbDrone.Core.Download;
 using NzbDrone.Plugin.Slskd.Models;
 

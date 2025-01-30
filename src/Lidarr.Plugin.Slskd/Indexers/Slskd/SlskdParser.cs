@@ -84,7 +84,7 @@ namespace NzbDrone.Core.Indexers.Slskd
 
                 var request = new HttpRequest($"{_settings.BaseUrl}/api/v0/searches/{searchId}/status")
                     {
-                        RateLimit = _rateLimit
+                        RateLimit = _rateLimit,
                     };
 
                 _httpClient.Get(request);
@@ -185,19 +185,20 @@ namespace NzbDrone.Core.Indexers.Slskd
         private ReleaseInfo CreateReleaseInfo(List<SlskdFile> audioFiles, SearchResponse response, string searchId)
         {
             var isSingleFile = audioFiles.Count == 1;
-            var totalSize = audioFiles.Sum(file => file.Size);
             var downloadPath = isSingleFile ? audioFiles[0].FileName : audioFiles[0].ParentPath;
+            var identifier = Crc32Hasher.Crc32Base64($"{response.Username}{audioFiles[0].ParentPath}");
 
+            var totalSize = audioFiles.Sum(file => file.Size);
             var releaseInfo = new ReleaseInfo
             {
-                Guid = $"{response.Username}\\{downloadPath}",
+                Guid = identifier,
                 Title = FileProcessingUtils.BuildTitle(audioFiles),
                 DownloadUrl = downloadPath,
                 InfoUrl = $"{_settings.BaseUrl}searches/{searchId}",
                 Size = totalSize,
                 Source = response.Username,
                 Origin = searchId,
-                DownloadProtocol = nameof(SlskdDownloadProtocol)
+                DownloadProtocol = nameof(SlskdDownloadProtocol),
             };
 
             if (response.UploadSpeed > 0)
