@@ -81,13 +81,6 @@ namespace NzbDrone.Core.Indexers.Slskd
                 {
                     return;
                 }
-
-                var request = new HttpRequest($"{_settings.BaseUrl}/api/v0/searches/{searchId}/status/")
-                    {
-                        RateLimit = _rateLimit,
-                    };
-
-                _httpClient.Get(request);
             }
 
             throw new TimeoutException($"Search {searchId} did not complete within {timeout}ms.");
@@ -101,6 +94,8 @@ namespace NzbDrone.Core.Indexers.Slskd
                 .SetHeader("X-API-Key", _settings.ApiKey)
                 .AddQueryParam("includeResponses", includeResponses.ToString().ToLowerInvariant())
                 .Build();
+
+            request.RateLimit = _rateLimit;
 
             try
             {
