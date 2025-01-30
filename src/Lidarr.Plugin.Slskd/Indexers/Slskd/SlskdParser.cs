@@ -82,7 +82,7 @@ namespace NzbDrone.Core.Indexers.Slskd
                     return;
                 }
 
-                var request = new HttpRequest($"{_settings.BaseUrl}/api/v0/searches/{searchId}/status")
+                var request = new HttpRequest($"{_settings.BaseUrl}/api/v0/searches/{searchId}/status/")
                     {
                         RateLimit = _rateLimit,
                     };
@@ -96,7 +96,7 @@ namespace NzbDrone.Core.Indexers.Slskd
         private SearchResult GetSearchResult(string searchId, bool includeResponses)
         {
             var request = new HttpRequestBuilder(_settings.BaseUrl)
-                .Resource($"api/v0/searches/{searchId}")
+                .Resource($"api/v0/searches/{searchId}/")
                 .Accept(HttpAccept.Json)
                 .SetHeader("X-API-Key", _settings.ApiKey)
                 .AddQueryParam("includeResponses", includeResponses.ToString().ToLowerInvariant())

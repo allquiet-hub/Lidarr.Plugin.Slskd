@@ -31,7 +31,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
         // Core Public Methods
         public bool TestConnectivity(SlskdSettings settings)
         {
-            var response = ExecuteGet<Application>(BuildRequest(settings, "/api/v0/application"));
+            var response = ExecuteGet<Application>(BuildRequest(settings, "/api/v0/application/"));
             return response?.Server.IsConnected == true && response.Server.IsLoggedIn;
         }
 
@@ -42,7 +42,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 throw new ArgumentNullException(nameof(settings));
             }
 
-            return ExecuteGet<SlskdOptions>(BuildRequest(settings, "/api/v0/options"));
+            return ExecuteGet<SlskdOptions>(BuildRequest(settings, "/api/v0/options/"));
         }
 
         public List<DownloadClientItem> GetQueue(SlskdSettings settings)
@@ -52,7 +52,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 throw new ArgumentNullException(nameof(settings));
             }
 
-            var downloadsQueues = ExecuteGet<List<DownloadsQueue>>(BuildRequest(settings, "/api/v0/transfers/downloads"));
+            var downloadsQueues = ExecuteGet<List<DownloadsQueue>>(BuildRequest(settings, "/api/v0/transfers/downloads/"));
             if (downloadsQueues == null)
             {
                 return new List<DownloadClientItem>();
@@ -122,7 +122,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 throw new ArgumentNullException(nameof(settings));
             }
 
-            var request = BuildRequest(settings, $"/api/v0/searches/{searchId}")
+            var request = BuildRequest(settings, $"/api/v0/searches/{searchId}/")
                 .AddQueryParam("includeResponses", true);
 
             var result = ExecuteGet<SearchResult>(request);
@@ -152,7 +152,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             var downloadRequests = audioFiles.Select(file => new DownloadRequest { Filename = file.FileName, Size = file.Size }).ToList();
             var downloadJson = downloadRequests.ToJson();
 
-            var downloadRequest = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}")
+            var downloadRequest = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}/")
                 .Post();
             Execute(downloadRequest, downloadJson);
 
@@ -167,7 +167,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 throw new ArgumentNullException(nameof(settings));
             }
 
-            var queues = ExecuteGet<List<DownloadsQueue>>(BuildRequest(settings, "/api/v0/transfers/downloads"));
+            var queues = ExecuteGet<List<DownloadsQueue>>(BuildRequest(settings, "/api/v0/transfers/downloads/"));
             var username = string.Empty;
             DownloadDirectory downloadDirectory = null;
             foreach (var queue in queues)
@@ -211,7 +211,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
             // Use the API to check if the directory exists based on HTTP response code
             var base64Directory = FileProcessingUtils.Base64Encode(downloadDirectory.Directory);
-            var directoryCheckRequest = BuildRequest(settings, $"/api/v0/files/downloads/directories/{base64Directory}");
+            var directoryCheckRequest = BuildRequest(settings, $"/api/v0/files/downloads/directories/{base64Directory}/");
             HttpResponse response;
 
             try
@@ -234,7 +234,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 return;
             }
 
-            var deleteRequest = BuildRequest(settings, $"/api/v0/files/downloads/directories/{base64Directory}");
+            var deleteRequest = BuildRequest(settings, $"/api/v0/files/downloads/directories/{base64Directory}/");
             deleteRequest.Method = HttpMethod.Delete;
             try
             {
@@ -278,7 +278,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
         private void CancelUserDownloadFile(string username, string fileId, bool deleteFile, SlskdSettings settings)
         {
-            var cancelRequest = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}/{fileId}")
+            var cancelRequest = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}/{fileId}/")
                 .AddQueryParam("remove", deleteFile);
             cancelRequest.Method = HttpMethod.Delete;
 
@@ -294,7 +294,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
             while (stopwatch.Elapsed < timeout)
             {
-                var fileRequest = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}/{fileId}");
+                var fileRequest = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}/{fileId}/");
                 if (shouldRateLimit)
                 {
                     fileRequest.RateLimit = _rateLimit;

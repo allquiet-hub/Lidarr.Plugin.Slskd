@@ -180,7 +180,7 @@ namespace NzbDrone.Core.Indexers.Slskd
         {
             var json = searchRequest.ToJson();
             var request = _requestBuilder
-                .Resource("api/v0/searches")
+                .Resource("api/v0/searches/")
                 .Post()
                 .Build();
 
