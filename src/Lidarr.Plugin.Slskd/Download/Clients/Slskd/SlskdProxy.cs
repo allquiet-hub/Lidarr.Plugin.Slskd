@@ -101,6 +101,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                             completedDownloadsPath,
                             audioFiles.First().FirstParentFolder)),
                         CanBeRemoved = true,
+                        CanMoveFiles = true,
                     };
                     if (status == DownloadItemStatus.Downloading && averageSpeed > 0 && totalSize > 0)
                     {
