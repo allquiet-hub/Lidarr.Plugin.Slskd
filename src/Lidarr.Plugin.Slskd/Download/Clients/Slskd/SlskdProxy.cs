@@ -6,6 +6,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using NLog;
+using NzbDrone.Common.Crypto;
 using NzbDrone.Common.Disk;
 using NzbDrone.Common.Http;
 using NzbDrone.Common.Serializer;
@@ -288,20 +289,24 @@ namespace NzbDrone.Core.Download.Clients.Slskd
         {
             var stopwatch = Stopwatch.StartNew();
             var timeout = TimeSpan.FromSeconds(10);
+            var shouldRateLimit = false;
 
             while (stopwatch.Elapsed < timeout)
             {
                 var fileRequest = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}/{fileId}");
-                fileRequest.RateLimit = _rateLimit;
-                var file = ExecuteGet<DirectoryFile>(settings, fileRequest);
-
-                if (file.TransferState.State != TransferStates.Completed)
+                if (shouldRateLimit)
                 {
-                    continue;
+                    fileRequest.RateLimit = _rateLimit;
                 }
 
-                _logger.Trace($"File '{fileId}' for user '{username}' is marked as completed.");
-                return;
+                var file = ExecuteGet<DirectoryFile>(fileRequest);
+                if (file.TransferState.State == TransferStates.Completed)
+                {
+                    _logger.Trace($"File '{fileId}' for user '{username}' is marked as completed.");
+                    return;
+                }
+
+                shouldRateLimit = true;
             }
 
             _logger.Warn($"Timeout waiting for file '{fileId}' to complete for user '{username}'.");
