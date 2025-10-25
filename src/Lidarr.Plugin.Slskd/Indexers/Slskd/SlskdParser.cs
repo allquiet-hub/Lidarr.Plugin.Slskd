@@ -58,12 +58,7 @@ namespace NzbDrone.Core.Indexers.Slskd
         private SearchResult GetInitialSearchResult(IndexerResponse indexerResponse)
         {
             var searchResult = new HttpResponse<SearchResult>(indexerResponse.HttpResponse).Resource;
-            if (searchResult == null)
-            {
-                throw new InvalidOperationException("Failed to parse initial search result.");
-            }
-
-            return searchResult;
+            return searchResult ?? throw new InvalidOperationException("Failed to parse initial search result.");
         }
 
         private int CalculateSearchTimeout(SearchRequest searchRequest)
@@ -167,14 +162,14 @@ namespace NzbDrone.Core.Indexers.Slskd
                 return false;
             }
 
-            if (minimumFileCount.HasValue && audioFiles.Count < minimumFileCount)
+            if (!minimumFileCount.HasValue || !(audioFiles.Count < minimumFileCount))
             {
-                _logger.Debug($"Ignored result {groupKey} from user {username}: " +
-                            $"{audioFiles.Count} files < minimum {minimumFileCount}");
-                return false;
+                return true;
             }
 
-            return true;
+            _logger.Debug($"Ignored result {groupKey} from user {username}: " +
+                          $"{audioFiles.Count} files < minimum {minimumFileCount}");
+            return false;
         }
 
         private ReleaseInfo CreateReleaseInfo(List<SlskdFile> audioFiles, SearchResponse response, string searchId)
@@ -198,7 +193,7 @@ namespace NzbDrone.Core.Indexers.Slskd
 
             if (response.UploadSpeed > 0)
             {
-                releaseInfo.PublishDate = DateTime.Now.AddSeconds(-(totalSize / response.UploadSpeed));
+                releaseInfo.PublishDate = DateTime.UtcNow.AddSeconds((double)totalSize / response.UploadSpeed);
             }
 
             return releaseInfo;

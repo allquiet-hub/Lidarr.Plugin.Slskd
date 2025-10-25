@@ -10,10 +10,11 @@ using NzbDrone.Plugin.Slskd.Models;
 
 namespace NzbDrone.Core.Indexers.Slskd
 {
-    public sealed class SlskdRequestGenerator : IIndexerRequestGenerator
+    public sealed class SlskdRequestGenerator(Logger logger, SlskdIndexerSettings settings)
+        : IIndexerRequestGenerator
     {
         // Properties first
-        public SlskdIndexerSettings Settings { get; init; }
+        public SlskdIndexerSettings Settings { get; init; } = settings;
 
         // Static members
         private static readonly HashSet<string> VariousArtistIds = new (StringComparer.OrdinalIgnoreCase)
@@ -47,15 +48,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             VariousArtistNames.Contains(artist.Name);
 
         // Instance members after
-        private readonly Logger _logger;
-        private readonly HttpRequestBuilder _requestBuilder;
-
-        public SlskdRequestGenerator(Logger logger, SlskdIndexerSettings settings)
-        {
-            _logger = logger;
-            Settings = settings;
-            _requestBuilder = CreateRequestBuilder(settings);
-        }
+        private readonly HttpRequestBuilder _requestBuilder = CreateRequestBuilder(settings);
 
         public IndexerPageableRequestChain GetRecentRequests()
         {
@@ -71,27 +64,27 @@ namespace NzbDrone.Core.Indexers.Slskd
                 throw new ArgumentNullException(nameof(searchCriteria));
             }
 
-            _logger.Debug("Creating search request for album: {0}", searchCriteria.AlbumQuery);
+            logger.Debug("Creating search request for album: {0}", searchCriteria.AlbumQuery);
 
             var chain = new IndexerPageableRequestChain();
 
             var minimumTrackCount = GetMinimumTrackCount(searchCriteria);
-            _logger.Debug("Minimum track count: {0}", minimumTrackCount);
+            logger.Debug("Minimum track count: {0}", minimumTrackCount);
 
             var isVariousArtist = IsVariousArtist(searchCriteria.Artist);
-            _logger.Debug("Is various artist: {0}", isVariousArtist);
+            logger.Debug("Is various artist: {0}", isVariousArtist);
 
             if (!isVariousArtist)
             {
-                _logger.Debug("Searching for artist: {0}", searchCriteria.ArtistQuery);
+                logger.Debug("Searching for artist: {0}", searchCriteria.ArtistQuery);
                 AddArtistSearches(chain, searchCriteria, minimumTrackCount);
             }
             else
             {
-                _logger.Debug("Searching for various artists, ignoring artist name, skip to searching by album only");
+                logger.Debug("Searching for various artists, ignoring artist name, skip to searching by album only");
             }
 
-            _logger.Debug("Adding album-only searches for: {0}", searchCriteria.AlbumQuery);
+            logger.Debug("Adding album-only searches for: {0}", searchCriteria.AlbumQuery);
             AddAlbumOnlySearches(chain, searchCriteria, minimumTrackCount);
 
             return chain;
@@ -127,17 +120,17 @@ namespace NzbDrone.Core.Indexers.Slskd
         {
             if (trackCount > 0 && Settings.SearchResultsWithLessFilesThanAlbumFirst)
             {
-                _logger.Debug("Adding search with track count filter: {0} tracks for query: {1}", trackCount, query);
+                logger.Debug("Adding search with track count filter: {0} tracks for query: {1}", trackCount, query);
                 chain.AddTier(GetRequests(query, trackCount: trackCount));
             }
 
-            _logger.Debug("Adding search without track count filter for query: {0}", query);
+            logger.Debug("Adding search without track count filter for query: {0}", query);
             chain.AddTier(GetRequests(query));
         }
 
         private IEnumerable<IndexerRequest> GetRequests(string searchParameters, int? searchTimeout = null, int? uploadSpeed = null, int trackCount = 0)
         {
-            _logger.Debug(CultureInfo.InvariantCulture,
+            logger.Debug(CultureInfo.InvariantCulture,
                 "Creating search request - Parameters: {0}, Timeout: {1}, Upload Speed: {2}, Track Count: {3}",
                 searchParameters,
                 searchTimeout,
