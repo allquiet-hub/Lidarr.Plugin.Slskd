@@ -193,7 +193,11 @@ namespace NzbDrone.Core.Indexers.Slskd
 
             if (response.UploadSpeed > 0)
             {
-                releaseInfo.PublishDate = DateTime.UtcNow.AddSeconds((double)totalSize / response.UploadSpeed);
+                // Calculate upload duration in minutes, ensuring at least 1 minute
+                var uploadDurationMinutes = Math.Max(1, (totalSize / (double)response.UploadSpeed) / 60.0);
+
+                // Add the duration in minutes
+                releaseInfo.PublishDate = DateTime.UtcNow.AddMinutes(uploadDurationMinutes);
             }
 
             return releaseInfo;
