@@ -2,6 +2,7 @@ name: Build Plugin
 on:
   push:
     branches:
+      - main
       - master
     tags-ignore:
       - '**'
@@ -68,7 +69,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           tag: v${{ env.PLUGIN_VERSION }}
-          commitish: ${{ env.GITHUB_SHA }}
+          commitish: ${{ github.sha }}
           name: Slskd Plugin
           body: >
             Lidarr plugin to add Slskd (Soulseek) support

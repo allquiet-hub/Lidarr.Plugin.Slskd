@@ -5,7 +5,7 @@ root = true
 # NOTE: Requires **VS2019 16.3** or later
 
 # Stylecop.ruleset
-# Description: Rules for Radarr
+# Description: Rules for Lidarr
 
 # Code files
 [*.cs]
@@ -19,10 +19,10 @@ indent_size = 4
 dotnet_sort_system_directives_first = true
 
 # Avoid "this." and "Me." if not necessary
-dotnet_style_qualification_for_field = false:refactoring
-dotnet_style_qualification_for_property = false:refactoring
-dotnet_style_qualification_for_method = false:refactoring
-dotnet_style_qualification_for_event = false:refactoring
+dotnet_style_qualification_for_field = false:warning
+dotnet_style_qualification_for_property = false:warning
+dotnet_style_qualification_for_method = false:warning
+dotnet_style_qualification_for_event = false:warning
 
 # Indentation preferences
 csharp_indent_block_contents = true
@@ -40,13 +40,21 @@ dotnet_naming_style.instance_field_style.capitalization = camel_case
 dotnet_naming_style.instance_field_style.required_prefix = _
 
 # Prefer "var" everywhere
-csharp_style_var_for_built_in_types = true:suggestion
-csharp_style_var_when_type_is_apparent = true:suggestion
-csharp_style_var_elsewhere = true:suggestion
+csharp_style_var_for_built_in_types = true
+csharp_style_var_when_type_is_apparent = true
+csharp_style_var_elsewhere = true
+# Prefer "out" variables to be declared inline
+csharp_style_inlined_variable_declaration = true
+
+# Using directive is unnecessary.
+dotnet_diagnostic.IDE0005.severity = error
+# Use var instead of explicit type
+dotnet_diagnostic.IDE0007.severity = error
+# Inline variable declaration
+dotnet_diagnostic.IDE0018.severity = error
 
 # Stylecop Rules
 dotnet_diagnostic.SA0001.severity = none
-dotnet_diagnostic.SA1005.severity = none
 dotnet_diagnostic.SA1025.severity = none
 dotnet_diagnostic.SA1101.severity = none
 dotnet_diagnostic.SA1116.severity = none
@@ -69,6 +77,7 @@ dotnet_diagnostic.SA1406.severity = suggestion
 dotnet_diagnostic.SA1410.severity = suggestion
 dotnet_diagnostic.SA1411.severity = suggestion
 dotnet_diagnostic.SA1413.severity = none
+dotnet_diagnostic.SA1512.severity = none
 dotnet_diagnostic.SA1516.severity = none
 dotnet_diagnostic.SA1600.severity = none
 dotnet_diagnostic.SA1601.severity = none
@@ -110,13 +119,13 @@ dotnet_diagnostic.SA1643.severity = none
 dotnet_diagnostic.SA1648.severity = none
 dotnet_diagnostic.SA1649.severity = none
 dotnet_diagnostic.SA1651.severity = none
-dotnet_diagnostic.SX1101.severity = warning
 dotnet_diagnostic.SX1309.severity = warning
 
 # Microsoft Analyzers that fail and need to be sorted thru
 dotnet_diagnostic.ASP0000.severity = suggestion
 dotnet_diagnostic.CA1000.severity = suggestion
 dotnet_diagnostic.CA1001.severity = suggestion
+dotnet_diagnostic.CA1002.severity = suggestion
 dotnet_diagnostic.CA1003.severity = suggestion
 dotnet_diagnostic.CA1008.severity = suggestion
 dotnet_diagnostic.CA1010.severity = suggestion
@@ -163,10 +172,17 @@ dotnet_diagnostic.CA1304.severity = suggestion
 dotnet_diagnostic.CA1305.severity = suggestion
 dotnet_diagnostic.CA1307.severity = suggestion
 dotnet_diagnostic.CA1308.severity = suggestion
+dotnet_diagnostic.CA1309.severity = suggestion
+dotnet_diagnostic.CA1310.severity = suggestion
 dotnet_diagnostic.CA1401.severity = suggestion
+dotnet_diagnostic.CA1416.severity = suggestion
+dotnet_diagnostic.CA1419.severity = suggestion
 dotnet_diagnostic.CA1507.severity = suggestion
+dotnet_diagnostic.CA1508.severity = suggestion
 dotnet_diagnostic.CA1707.severity = suggestion
+dotnet_diagnostic.CA1708.severity = suggestion
 dotnet_diagnostic.CA1710.severity = suggestion
+dotnet_diagnostic.CA1711.severity = suggestion
 dotnet_diagnostic.CA1712.severity = suggestion
 dotnet_diagnostic.CA1714.severity = suggestion
 dotnet_diagnostic.CA1715.severity = suggestion
@@ -175,34 +191,23 @@ dotnet_diagnostic.CA1717.severity = suggestion
 dotnet_diagnostic.CA1720.severity = suggestion
 dotnet_diagnostic.CA1721.severity = suggestion
 dotnet_diagnostic.CA1724.severity = suggestion
-dotnet_diagnostic.CA1801.severity = suggestion
-dotnet_diagnostic.CA1802.severity = suggestion
-dotnet_diagnostic.CA1805.severity = suggestion
+dotnet_diagnostic.CA1725.severity = suggestion
 dotnet_diagnostic.CA1806.severity = suggestion
 dotnet_diagnostic.CA1810.severity = suggestion
 dotnet_diagnostic.CA1812.severity = suggestion
+dotnet_diagnostic.CA1813.severity = suggestion
 dotnet_diagnostic.CA1814.severity = suggestion
 dotnet_diagnostic.CA1815.severity = suggestion
 dotnet_diagnostic.CA1816.severity = suggestion
 dotnet_diagnostic.CA1819.severity = suggestion
-dotnet_diagnostic.CA1820.severity = suggestion
-dotnet_diagnostic.CA1821.severity = suggestion
 dotnet_diagnostic.CA1822.severity = suggestion
 dotnet_diagnostic.CA1823.severity = suggestion
 dotnet_diagnostic.CA1824.severity = suggestion
-dotnet_diagnostic.CA1825.severity = suggestion
-dotnet_diagnostic.CA1826.severity = suggestion
-dotnet_diagnostic.CA1827.severity = suggestion
-dotnet_diagnostic.CA1828.severity = suggestion
-dotnet_diagnostic.CA1829.severity = suggestion
-dotnet_diagnostic.CA1834.severity = suggestion
+dotnet_diagnostic.CA1848.severity = suggestion
 dotnet_diagnostic.CA2000.severity = suggestion
 dotnet_diagnostic.CA2002.severity = suggestion
 dotnet_diagnostic.CA2007.severity = suggestion
 dotnet_diagnostic.CA2008.severity = suggestion
-dotnet_diagnostic.CA2009.severity = suggestion
-dotnet_diagnostic.CA2010.severity = suggestion
-dotnet_diagnostic.CA2011.severity = suggestion
 dotnet_diagnostic.CA2012.severity = suggestion
 dotnet_diagnostic.CA2013.severity = suggestion
 dotnet_diagnostic.CA2100.severity = suggestion
@@ -210,6 +215,7 @@ dotnet_diagnostic.CA2101.severity = suggestion
 dotnet_diagnostic.CA2119.severity = suggestion
 dotnet_diagnostic.CA2153.severity = suggestion
 dotnet_diagnostic.CA2200.severity = suggestion
+dotnet_diagnostic.CA2201.severity = suggestion
 dotnet_diagnostic.CA2207.severity = suggestion
 dotnet_diagnostic.CA2208.severity = suggestion
 dotnet_diagnostic.CA2211.severity = suggestion
@@ -232,6 +238,9 @@ dotnet_diagnostic.CA2243.severity = suggestion
 dotnet_diagnostic.CA2244.severity = suggestion
 dotnet_diagnostic.CA2245.severity = suggestion
 dotnet_diagnostic.CA2246.severity = suggestion
+dotnet_diagnostic.CA2249.severity = suggestion
+dotnet_diagnostic.CA2251.severity = suggestion
+dotnet_diagnostic.CA2254.severity = suggestion
 dotnet_diagnostic.CA3061.severity = suggestion
 dotnet_diagnostic.CA3075.severity = suggestion
 dotnet_diagnostic.CA3076.severity = suggestion
@@ -255,11 +264,13 @@ dotnet_diagnostic.CA5374.severity = suggestion
 dotnet_diagnostic.CA5379.severity = suggestion
 dotnet_diagnostic.CA5384.severity = suggestion
 dotnet_diagnostic.CA5385.severity = suggestion
+dotnet_diagnostic.CA5392.severity = suggestion
+dotnet_diagnostic.CA5394.severity = suggestion
 dotnet_diagnostic.CA5397.severity = suggestion
 
+dotnet_diagnostic.SYSLIB0006.severity = none
 
-
-[*.{js,html,js,hbs,less,css}]
+[*.{js,html,hbs,less,css,ts,tsx}]
 charset = utf-8
 trim_trailing_whitespace = true
 insert_final_newline = true

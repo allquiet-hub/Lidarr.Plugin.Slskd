@@ -28,7 +28,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
         [FieldDefinition(1, Label = "Port", Type = FieldType.Textbox)]
         public int Port { get; set; } = 5030;
 
-        [FieldDefinition(2, Label = "Url Base", Type = FieldType.Textbox, Advanced = true, HelpText = "Adds a prefix to the nzbget url, e.g. http://[host]:[port]/[urlBase]/api")]
+        [FieldDefinition(2, Label = "Url Base", Type = FieldType.Textbox, Advanced = true, HelpText = "Adds a prefix to the slskd url, e.g. http://[host]:[port]/[urlBase]/api")]
         public string UrlBase { get; set; }
 
         [FieldDefinition(3, Label = "Use SSL", Type = FieldType.Checkbox)]
