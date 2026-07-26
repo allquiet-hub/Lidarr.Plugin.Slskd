@@ -149,3 +149,6 @@ _temp_*/**/*
 ## Merge any idea folder
 */**/.idea
 *.iml
+
+# Pacchetti di build
+*.zip
