@@ -12,6 +12,7 @@ using NzbDrone.Core.Localization;
 using NzbDrone.Core.Parser.Model;
 using NzbDrone.Core.RemotePathMappings;
 using NzbDrone.Core.Validation;
+using NzbDrone.Plugin.Slskd.Helpers;
 
 namespace NzbDrone.Core.Download.Clients.Slskd
 {
@@ -111,6 +112,18 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 {
                     InfoLink = HttpRequestBuilder.BuildBaseUrl(Settings.UseSsl, Settings.Host, Settings.Port, Settings.UrlBase),
                     DetailedDescription = "Could not connect to Slskd, please check your settings",
+                };
+            }
+
+            if (!_proxy.SupportsBatches(Settings))
+            {
+                return new NzbDroneValidationFailure(string.Empty, $"Slskd {SlskdCapabilities.BatchesMinimumVersion} or newer is recommended")
+                {
+                    IsWarning = true,
+                    InfoLink = HttpRequestBuilder.BuildBaseUrl(Settings.UseSsl, Settings.Host, Settings.Port, Settings.UrlBase),
+                    DetailedDescription = $"This slskd instance is older than {SlskdCapabilities.BatchesMinimumVersion}, so Lidarr cannot pin the completed download location " +
+                                          "and has to infer it from the remote folder name. Downloads will not be imported if 'transfers.download.destination.subdirectory' " +
+                                          "is customised in slskd. Upgrading slskd also enables automatic retries of failed transfers.",
                 };
             }
 

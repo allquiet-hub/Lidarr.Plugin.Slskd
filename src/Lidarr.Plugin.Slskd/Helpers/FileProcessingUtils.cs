@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using NzbDrone.Core.Download;
 using NzbDrone.Plugin.Slskd.Models;
 
@@ -33,7 +34,28 @@ public static class FileProcessingUtils
         TransferSubStates.Rejected,
         TransferSubStates.Aborted
     };
-    private static readonly Dictionary<string, bool> _extensionCache = new ();
+    private static readonly Regex DiscFolderPattern = new (
+        @"^(CD|Disc|Disk|Side)\s*\d+$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // Fixed set rather than Path.GetInvalidFileNameChars(): Lidarr and slskd may run on different
+    // platforms, and the segment has to be valid on the slskd side.
+    private static readonly char[] InvalidSegmentChars = { '<', '>', ':', '"', '/', '\\', '|', '?', '*' };
+
+    public static bool IsDiscFolder(string folderName) =>
+        DiscFolderPattern.IsMatch(folderName ?? string.Empty);
+
+    public static string GetParentPath(string path)
+    {
+        if (string.IsNullOrEmpty(path))
+        {
+            return path;
+        }
+
+        var lastSep = path.LastIndexOf('\\');
+        return lastSep > 0 ? path[..lastSep] : path;
+    }
+
     private static readonly HashSet<string> _folderToIgnore = new (StringComparer.OrdinalIgnoreCase)
     {
         "Soulseek", "Soulseek Downloads", "Soulseek Shared Folder", "FOR SOULSEEK", "soulseek to share",
@@ -67,20 +89,7 @@ public static class FileProcessingUtils
     {
         EnsureFileExtensions(files);
         return files.Where(file =>
-        {
-            if (string.IsNullOrEmpty(file.Extension))
-            {
-                return false;
-            }
-
-            if (!_extensionCache.TryGetValue(file.Extension, out var isValid))
-            {
-                isValid = ValidAudioExtensions.Contains(file.Extension);
-                _extensionCache[file.Extension] = isValid;
-            }
-
-            return isValid;
-        }).ToList();
+            !string.IsNullOrEmpty(file.Extension) && ValidAudioExtensions.Contains(file.Extension)).ToList();
     }
 
     private static string DetermineCodec(IEnumerable<SlskdFile> files)
@@ -140,6 +149,7 @@ public static class FileProcessingUtils
         var parts = firstFile.ParentPath.Split('\\')
             .Where(s => !_folderToIgnore.Contains(s) &&
                        !IsAudioExtension(s) &&
+                       !IsDiscFolder(s) &&
                        !s.StartsWith("@@") &&
                        !s.StartsWith("_") &&
                        !s.StartsWith("smb-share:") &&
@@ -171,23 +181,6 @@ public static class FileProcessingUtils
         ValidAudioExtensions.Any(ext =>
             s.Equals(ext, StringComparison.OrdinalIgnoreCase) ||
             s.StartsWith(ext, StringComparison.OrdinalIgnoreCase));
-
-    private static void EnsureFileExtensions(IEnumerable<SlskdFile> files)
-    {
-        foreach (var file in files)
-        {
-            if (!string.IsNullOrEmpty(file.Extension))
-            {
-                continue;
-            }
-
-            var lastDotIndex = file.Name.LastIndexOf('.');
-            if (lastDotIndex >= 0)
-            {
-                file.Extension = file.Name[(lastDotIndex + 1) ..].ToLower();
-            }
-        }
-    }
 
     public static void CombineFilesWithMetadata(List<DirectoryFile> files, List<SearchResponseFile> metadataFiles)
     {
@@ -225,6 +218,15 @@ public static class FileProcessingUtils
             return (DownloadItemStatus.Queued, null);
         }
 
+        // slskd 0.26.0+ retries failed transfers with exponential backoff. Such files sit in a terminal
+        // state until the next attempt, so report them as queued instead of letting Lidarr blocklist a
+        // release that may still succeed.
+        var retrying = files.Count(f => f.NextAttemptAt > DateTime.UtcNow);
+        if (retrying > 0)
+        {
+            return (DownloadItemStatus.Queued, $"{retrying} files failed and are scheduled to be retried by slskd");
+        }
+
         var allCompleted = states.All(s => s.State == TransferStates.Completed);
         if (allCompleted)
         {
@@ -256,5 +258,27 @@ public static class FileProcessingUtils
     {
         var plainTextBytes = Encoding.UTF8.GetBytes(plainText);
         return Convert.ToBase64String(plainTextBytes);
+    }
+
+    /// <summary>
+    /// Makes a single path segment safe to send to slskd as part of a batch destination.
+    /// slskd rejects destinations containing traversal segments before it applies its own sanitization.
+    /// </summary>
+    public static string SanitizePathSegment(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var builder = new StringBuilder(value.Length);
+        foreach (var character in value)
+        {
+            builder.Append(char.IsControl(character) || InvalidSegmentChars.Contains(character) ? '_' : character);
+        }
+
+        // Trailing dots are stripped by Windows and leading dots would produce '.' or '..' segments
+        var sanitized = builder.ToString().Trim().Trim('.').Trim();
+        return string.IsNullOrEmpty(sanitized) ? null : sanitized;
     }
 }

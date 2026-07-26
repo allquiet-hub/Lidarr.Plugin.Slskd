@@ -9,6 +9,10 @@ public interface ISlskdProxy
 
     SlskdOptions GetOptions(SlskdSettings settings);
 
+    Application GetApplication(SlskdSettings settings);
+
+    bool SupportsBatches(SlskdSettings settings);
+
     List<DownloadClientItem> GetQueue(SlskdSettings settings);
 
     string Download(string searchId, string username, string downloadPath, SlskdSettings settings);

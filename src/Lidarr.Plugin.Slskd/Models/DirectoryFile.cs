@@ -8,6 +8,31 @@ public class DirectoryFile : SlskdFile
     [JsonProperty("averageSpeed")]
     public double AverageSpeed { get; set; }
 
+    /// <summary>
+    /// Gets the identifier of the batch this transfer belongs to, if it was enqueued as part of one.
+    /// Available from slskd 0.26.0 onwards; null for transfers enqueued through the legacy endpoint.
+    /// </summary>
+    [JsonProperty("batchId")]
+    public string BatchId { get; set; }
+
+    /// <summary>
+    /// Gets the number of times the transfer has been attempted (slskd 0.26.0+).
+    /// </summary>
+    [JsonProperty("attempts")]
+    public int Attempts { get; set; }
+
+    /// <summary>
+    /// Gets the time at which slskd will retry the transfer, if a retry is scheduled (slskd 0.26.0+).
+    /// </summary>
+    [JsonProperty("nextAttemptAt")]
+    public DateTime? NextAttemptAt { get; set; }
+
+    /// <summary>
+    /// Gets a value indicating whether the transfer has been removed from the queue (slskd 0.26.0+).
+    /// </summary>
+    [JsonProperty("removed")]
+    public bool Removed { get; set; }
+
     [JsonProperty("bytesRemaining")]
     public long BytesRemaining { get; set; }
 
