@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Core.Download;
@@ -34,8 +35,10 @@ namespace NzbDrone.Core.Blocklisting
                 SourceTitle = message.SourceTitle,
                 Quality = message.Quality,
                 Date = DateTime.UtcNow,
-                PublishedDate = DateTime.Parse(message.Data.GetValueOrDefault("publishedDate")),
-                Size = long.Parse(message.Data.GetValueOrDefault("size", "0")),
+                PublishedDate = DateTime.TryParse(message.Data.GetValueOrDefault("publishedDate"), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var publishedDate)
+                    ? publishedDate
+                    : DateTime.UtcNow,
+                Size = long.TryParse(message.Data.GetValueOrDefault("size", "0"), out var size) ? size : 0,
                 Indexer = message.Data.GetValueOrDefault("indexer"),
                 Protocol = message.Data.GetValueOrDefault("protocol"),
                 Message = message.Message,
