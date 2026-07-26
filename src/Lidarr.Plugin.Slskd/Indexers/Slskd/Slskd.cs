@@ -1,6 +1,5 @@
 using System;
 using NLog;
-using NzbDrone.Common.Cache;
 using NzbDrone.Common.Http;
 using NzbDrone.Core.Configuration;
 using NzbDrone.Core.Download.Clients.Slskd;
@@ -19,8 +18,7 @@ namespace NzbDrone.Core.Indexers.Slskd
 
         private readonly ISlskdProxy _slskdProxy;
 
-        public Slskd(ICacheManager cacheManager,
-            ISlskdProxy slskdProxy,
+        public Slskd(ISlskdProxy slskdProxy,
             IHttpClient httpClient,
             IIndexerStatusService indexerStatusService,
             IConfigService configService,

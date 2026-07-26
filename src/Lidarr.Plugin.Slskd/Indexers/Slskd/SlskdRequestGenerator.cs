@@ -36,7 +36,7 @@ namespace NzbDrone.Core.Indexers.Slskd
 
         private static int GetMinimumTrackCount(AlbumSearchCriteria searchCriteria)
         {
-            var albumReleases = searchCriteria.Albums.First().AlbumReleases;
+            var albumReleases = searchCriteria.Albums.FirstOrDefault()?.AlbumReleases;
             return albumReleases?.Value?.Any() == true
                 ? albumReleases.Value.Min(r => r.TrackCount)
                 : 0;

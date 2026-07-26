@@ -63,7 +63,9 @@ namespace NzbDrone.Core.Indexers.Slskd
 
         private int CalculateSearchTimeout(SearchRequest searchRequest)
         {
-            return ((searchRequest?.SearchTimeout ?? _settings.SearchTimeout) + SearchTimeoutBuffer) * 1000;
+            // SearchTimeout on the request is already in ms; the setting is in seconds
+            var searchTimeoutMs = searchRequest?.SearchTimeout ?? (_settings.SearchTimeout * 1000);
+            return searchTimeoutMs + (SearchTimeoutBuffer * 1000);
         }
 
         private void WaitForSearchCompletion(string searchId, int timeout)
@@ -114,6 +116,12 @@ namespace NzbDrone.Core.Indexers.Slskd
         {
             var releases = new List<ReleaseInfo>();
 
+            if (searchResult.Responses == null || !searchResult.Responses.Any())
+            {
+                _logger.Debug("Search {0} returned no responses.", searchResult.Id);
+                return releases;
+            }
+
             foreach (var response in searchResult.Responses)
             {
                 if (_ignoredUsersSet.Contains(response.Username))
@@ -130,28 +138,51 @@ namespace NzbDrone.Core.Indexers.Slskd
 
         private void ProcessUserResponse(SearchResponse response, string searchId, int? minimumFileCount, List<ReleaseInfo> releases)
         {
-            var groupedFiles = response.Files
+            var rawGroups = response.Files
                 .Cast<SlskdFile>()
-                .GroupBy(file => file.ParentPath)
-                .ToList();
+                .GroupBy(file => file.ParentPath);
 
-            foreach (var group in groupedFiles)
+            foreach (var (groupKey, files) in MergeDiscFolders(rawGroups))
             {
-                var files = group.ToList();
                 FileProcessingUtils.EnsureFileExtensions(files);
                 var audioFiles = files.FilterValidAudioFiles().ToList();
 
-                if (!IsValidAudioGroup(audioFiles, group.Key, response.Username, minimumFileCount))
+                if (!IsValidAudioGroup(audioFiles, groupKey, response.Username, minimumFileCount))
                 {
                     continue;
                 }
 
-                var releaseInfo = CreateReleaseInfo(audioFiles, response, searchId);
+                var releaseInfo = CreateReleaseInfo(audioFiles, response, searchId, groupKey);
                 if (releaseInfo != null)
                 {
                     releases.Add(releaseInfo);
                 }
             }
+        }
+
+        private static List<(string GroupKey, List<SlskdFile> Files)> MergeDiscFolders(
+            IEnumerable<IGrouping<string, SlskdFile>> groups)
+        {
+            var merged = new Dictionary<string, List<SlskdFile>>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var group in groups)
+            {
+                var parentPath = group.Key ?? string.Empty;
+                var folderName = parentPath.Split('\\').LastOrDefault() ?? string.Empty;
+
+                var groupKey = FileProcessingUtils.IsDiscFolder(folderName)
+                    ? FileProcessingUtils.GetParentPath(parentPath)
+                    : parentPath;
+
+                if (!merged.TryGetValue(groupKey, out var list))
+                {
+                    merged[groupKey] = list = new List<SlskdFile>();
+                }
+
+                list.AddRange(group);
+            }
+
+            return merged.Select(kv => (kv.Key, kv.Value)).ToList();
         }
 
         private bool IsValidAudioGroup(List<SlskdFile> audioFiles, string groupKey, string username, int? minimumFileCount)
@@ -172,11 +203,11 @@ namespace NzbDrone.Core.Indexers.Slskd
             return false;
         }
 
-        private ReleaseInfo CreateReleaseInfo(List<SlskdFile> audioFiles, SearchResponse response, string searchId)
+        private ReleaseInfo CreateReleaseInfo(List<SlskdFile> audioFiles, SearchResponse response, string searchId, string groupKey)
         {
             var isSingleFile = audioFiles.Count == 1;
-            var downloadPath = isSingleFile ? audioFiles[0].FileName : audioFiles[0].ParentPath;
-            var identifier = Crc32Hasher.Crc32Base64($"{response.Username}{audioFiles[0].ParentPath}");
+            var downloadPath = isSingleFile ? audioFiles[0].FileName : groupKey;
+            var identifier = Crc32Hasher.Crc32Base64($"{response.Username}{groupKey}");
 
             var totalSize = audioFiles.Sum(file => file.Size);
             var releaseInfo = new ReleaseInfo
@@ -193,11 +224,11 @@ namespace NzbDrone.Core.Indexers.Slskd
 
             if (response.UploadSpeed > 0)
             {
-                // Calculate upload duration in minutes, ensuring at least 1 minute
                 var uploadDurationMinutes = Math.Max(1, (totalSize / (double)response.UploadSpeed) / 60.0);
 
-                // Add the duration in minutes
-                releaseInfo.PublishDate = DateTime.UtcNow.AddMinutes(uploadDurationMinutes);
+                // Subtract so faster uploads (smaller duration) produce a more recent PublishDate
+                // and are ranked first by Lidarr's newest-first sort
+                releaseInfo.PublishDate = DateTime.UtcNow.AddMinutes(-uploadDurationMinutes);
             }
 
             return releaseInfo;
