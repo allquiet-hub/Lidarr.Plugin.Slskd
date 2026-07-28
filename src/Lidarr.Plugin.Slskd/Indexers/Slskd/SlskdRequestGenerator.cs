@@ -8,6 +8,7 @@ using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Http;
 using NzbDrone.Common.Serializer;
 using NzbDrone.Core.IndexerSearch.Definitions;
+using NzbDrone.Plugin.Slskd.Helpers;
 using NzbDrone.Plugin.Slskd.Models;
 
 namespace NzbDrone.Core.Indexers.Slskd
@@ -20,12 +21,25 @@ namespace NzbDrone.Core.Indexers.Slskd
         public const string ExpectedTrackCountHeader = "X-Lidarr-Expected-Tracks";
 
         /// <summary>
+        /// Carry the library's exact artist name and album title to the parser, base64 encoded because
+        /// header values must stay ASCII. Both feed the title annotation that keeps releases mappable.
+        /// </summary>
+        public const string ArtistNameHeader = "X-Lidarr-Artist";
+
+        public const string AlbumTitleHeader = "X-Lidarr-Album";
+
+        /// <summary>
         /// slskd's searchTimeout is an inactivity window, not a total duration: a search ends this long
         /// after the last response arrives, so the wall clock cost is unbounded when results trickle in.
         /// A short window collects the same responses in far less time, since peers that answer at all
         /// answer in bursts; the overall budget is enforced by the parser instead.
         /// </summary>
         private const int InactivityWindowMs = 3000;
+
+        /// <summary>
+        /// Words an album title needs before it is worth searching for on its own, without the artist.
+        /// </summary>
+        private const int DistinctiveAlbumWordCount = 3;
 
         // Properties first
         public SlskdIndexerSettings Settings { get; init; }
@@ -100,7 +114,11 @@ namespace NzbDrone.Core.Indexers.Slskd
             foreach (var query in BuildQueries(searchCriteria))
             {
                 _logger.Debug("Adding search tier for query: {0}", query);
-                chain.AddTier(GetRequests(query, trackCount: minimumTrackCount));
+                chain.AddTier(GetRequests(
+                    query,
+                    trackCount: minimumTrackCount,
+                    artistName: searchCriteria.Artist?.Name,
+                    albumTitle: searchCriteria.Albums?.FirstOrDefault()?.Title));
             }
 
             return chain;
@@ -132,16 +150,28 @@ namespace NzbDrone.Core.Indexers.Slskd
 
             if (!isVariousArtist)
             {
-                candidates.Add($"{Simplify(searchCriteria.ArtistQuery)} {album}");
+                // Some albums are titled after their artist, and repeating the name only lengthens the
+                // query without narrowing it, since every term still has to be present
+                var artist = Simplify(searchCriteria.ArtistQuery);
+                candidates.Add(album.StartsWith(artist, StringComparison.OrdinalIgnoreCase)
+                    ? AsUnit(album)
+                    : $"{AsUnit(artist)} {AsUnit(album)}");
             }
 
-            candidates.Add(album);
+            // Dropping the artist widens the search to anything sharing the album's words, which only
+            // pays off when those words are specific enough to stand alone. A short title such as
+            // "Scrap Metal" matches unrelated folders by the dozen, turning an honest "not found" into a
+            // page of noise that Lidarr then has to reject one by one.
+            if (WordCount(album) >= DistinctiveAlbumWordCount)
+            {
+                candidates.Add(AsUnit(album));
+            }
 
             if (!isVariousArtist)
             {
                 foreach (var alias in searchCriteria.Artist.Metadata.Value.Aliases)
                 {
-                    candidates.Add($"{Simplify(alias)} {album}");
+                    candidates.Add($"{AsUnit(Simplify(alias))} {AsUnit(album)}");
                 }
             }
 
@@ -161,6 +191,20 @@ namespace NzbDrone.Core.Indexers.Slskd
         /// Apostrophes are removed rather than replaced, so "Don't" stays a single term instead of
         /// becoming "Don t" and requiring a bogus one-letter term to be present.
         /// </summary>
+        /// <summary>
+        /// Binds the words of a single field together with '+', so the artist and the album each act as
+        /// one unit instead of dissolving into loose terms.
+        ///
+        /// Left as separate words, an artist like "DJ Dark" matches anything holding "dj" and "dark"
+        /// anywhere in its path, and short common words drag in unrelated folders by the dozen. Bound as
+        /// units the same search returns a handful of results without losing the ones that matter.
+        /// </summary>
+        private static string AsUnit(string value) =>
+            value.IsNullOrWhiteSpace() ? value : value.Replace(' ', '+');
+
+        private static int WordCount(string value) =>
+            value.IsNullOrWhiteSpace() ? 0 : value.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+
         private static string Simplify(string value)
         {
             if (value.IsNullOrWhiteSpace())
@@ -180,7 +224,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             return new IndexerPageableRequestChain();
         }
 
-        private IEnumerable<IndexerRequest> GetRequests(string searchParameters, int? searchTimeout = null, int? uploadSpeed = null, int trackCount = 0)
+        private IEnumerable<IndexerRequest> GetRequests(string searchParameters, int? searchTimeout = null, double? uploadSpeed = null, int trackCount = 0, string artistName = null, string albumTitle = null)
         {
             _logger.Debug(CultureInfo.InvariantCulture,
                 "Creating search request - Parameters: {0}, Timeout: {1}, Upload Speed: {2}, Track Count: {3}",
@@ -191,14 +235,14 @@ namespace NzbDrone.Core.Indexers.Slskd
 
             var searchRequest = CreateSearchRequest(
                 searchParameters,
-                searchTimeout ?? Math.Min(InactivityWindowMs, Settings.SearchTimeout * 1000),
+                searchTimeout ?? InactivityWindowMs,
                 uploadSpeed ?? Settings.MinimumPeerUploadSpeed);
 
-            var request = BuildSearchRequest(searchRequest, trackCount);
+            var request = BuildSearchRequest(searchRequest, trackCount, artistName, albumTitle);
             yield return new IndexerRequest(request);
         }
 
-        private SearchRequest CreateSearchRequest(string searchText, int searchTimeout, int uploadSpeed)
+        private SearchRequest CreateSearchRequest(string searchText, int searchTimeout, double uploadSpeed)
         {
             // MinimumResponseFileCount is deliberately left unset: filtering incomplete results away
             // server-side costs an extra search tier and hides them from interactive search, so the
@@ -212,7 +256,7 @@ namespace NzbDrone.Core.Indexers.Slskd
 
             if (uploadSpeed > 0)
             {
-                request.MinimumPeerUploadSpeed = uploadSpeed * 1024 * 1024; // Convert MB/s to B/s
+                request.MinimumPeerUploadSpeed = (int)Math.Round(uploadSpeed * 1024 * 1024); // Convert MB/s to B/s
             }
 
             if (Settings.ResponseLimit > 0)
@@ -231,7 +275,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             return request;
         }
 
-        private HttpRequest BuildSearchRequest(SearchRequest searchRequest, int trackCount)
+        private HttpRequest BuildSearchRequest(SearchRequest searchRequest, int trackCount, string artistName, string albumTitle)
         {
             var json = searchRequest.ToJson();
             var request = _requestBuilder
@@ -248,6 +292,16 @@ namespace NzbDrone.Core.Indexers.Slskd
             if (trackCount > 0 && !Settings.AllowIncompleteReleases)
             {
                 request.Headers.Add(ExpectedTrackCountHeader, trackCount.ToString(CultureInfo.InvariantCulture));
+            }
+
+            if (artistName.IsNotNullOrWhiteSpace())
+            {
+                request.Headers.Add(ArtistNameHeader, FileProcessingUtils.Base64Encode(artistName));
+            }
+
+            if (albumTitle.IsNotNullOrWhiteSpace())
+            {
+                request.Headers.Add(AlbumTitleHeader, FileProcessingUtils.Base64Encode(albumTitle));
             }
 
             return request;

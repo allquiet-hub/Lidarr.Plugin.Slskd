@@ -149,12 +149,26 @@ public static class FileProcessingUtils
         return null;
     }
 
-    public static string BuildTitle<T>(List<T> files)
+    public static string BuildTitle<T>(List<T> files, string folderOverride = null)
         where T : SlskdFile
     {
         if (files == null || !files.Any())
         {
             return string.Empty;
+        }
+
+        // A caller that already knows what the release is ("Artist - Album" from the grab) supersedes
+        // everything derived from the remote path; only the quality suffix still comes from the files
+        if (!string.IsNullOrWhiteSpace(folderOverride))
+        {
+            return string.Join(" ", new[]
+            {
+                folderOverride,
+                DetermineCodec(files),
+                DetermineBitRate(files),
+                DetermineSampleRateAndDepth(files),
+                DetermineVbr(files)
+            }.Where(s => !string.IsNullOrEmpty(s)));
         }
 
         var firstFile = files.First();
@@ -200,6 +214,11 @@ public static class FileProcessingUtils
 
             if (parentIsArtist)
             {
+                // Joined with a space on purpose. A dash would let Lidarr's parser split the title into
+                // artist and album, and it has no way to reach the right album from a remote folder name:
+                // whatever it extracts is compared against the MusicBrainz title, which the sharer never
+                // saw. A title it cannot parse is the safe outcome, because Lidarr then falls back to the
+                // album the search was for.
                 folderInfo = parent.Contains(leaf, StringComparison.OrdinalIgnoreCase) ? parent : $"{parent} {leaf}";
             }
             else
@@ -207,6 +226,17 @@ public static class FileProcessingUtils
                 // A bare collection folder as the only candidate says nothing about the release
                 folderInfo = IsContainerFolder(leaf) ? fileName : leaf;
             }
+        }
+
+        // A lone file is not an album folder: whoever shares it names the track in the file, and the
+        // folder above is usually just the artist or a collection. Without the file name the release
+        // carries nothing Lidarr can identify, so a single "Artist - Song.mp3" is described by its own
+        // name rather than by the folder holding it.
+        if (files.Count == 1 && !folderInfo.Contains(fileName, StringComparison.OrdinalIgnoreCase))
+        {
+            folderInfo = fileName.Contains(folderInfo, StringComparison.OrdinalIgnoreCase)
+                ? fileName
+                : $"{folderInfo} {fileName}";
         }
 
         return string.Join(" ", new[]

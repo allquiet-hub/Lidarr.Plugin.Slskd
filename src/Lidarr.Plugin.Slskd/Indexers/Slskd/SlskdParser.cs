@@ -4,8 +4,11 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Net.Http;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using NLog;
+using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Http;
 using NzbDrone.Common.Serializer;
 using NzbDrone.Core.Parser.Model;
@@ -17,7 +20,16 @@ namespace NzbDrone.Core.Indexers.Slskd
 {
     public class SlskdParser : IParseIndexerResponse
     {
+        private const int BytesPerMegabyte = 1024 * 1024;
+
         private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(750);
+
+        /// <summary>
+        /// Ceiling on a single search, not a tuning knob: what governs how long a search runs is the
+        /// inactivity window sent to slskd, and observed searches complete in under ten seconds. This
+        /// only stops a search whose results never stop trickling in from stalling the whole chain.
+        /// </summary>
+        private static readonly TimeSpan SearchBudget = TimeSpan.FromSeconds(30);
 
         private readonly ProviderDefinition _definition;
         private readonly SlskdIndexerSettings _settings;
@@ -52,7 +64,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             {
                 // Abandoning the tier is better than throwing: a slow search would otherwise fail the
                 // whole feed and mark the indexer unhealthy, when the next query may well succeed
-                _logger.Warn($"Search {searchResult.Id} was still running after {_settings.SearchTimeout}s, abandoning it");
+                _logger.Warn($"Search {searchResult.Id} was still running after {SearchBudget.TotalSeconds}s, abandoning it");
                 CancelSearch(searchResult.Id);
                 return new List<ReleaseInfo>();
             }
@@ -60,13 +72,83 @@ namespace NzbDrone.Core.Indexers.Slskd
             // Re-fetch with responses: slskd withholds the response bodies until the search completes
             searchResult = GetSearchResult(searchResult.Id, includeResponses: true);
 
-            return ProcessSearchResults(searchResult, GetExpectedTrackCount(indexerResponse.HttpRequest));
+            return ProcessSearchResults(
+                searchResult,
+                GetExpectedTrackCount(indexerResponse.HttpRequest),
+                DecodeHeader(indexerResponse.HttpRequest, SlskdRequestGenerator.ArtistNameHeader),
+                DecodeHeader(indexerResponse.HttpRequest, SlskdRequestGenerator.AlbumTitleHeader));
         }
 
         private static int GetExpectedTrackCount(HttpRequest request)
         {
             var header = request?.Headers?[SlskdRequestGenerator.ExpectedTrackCountHeader];
             return int.TryParse(header, NumberStyles.Integer, CultureInfo.InvariantCulture, out var count) ? count : 0;
+        }
+
+        private static string DecodeHeader(HttpRequest request, string name)
+        {
+            var value = request?.Headers?[name];
+            if (value.IsNullOrWhiteSpace())
+            {
+                return null;
+            }
+
+            try
+            {
+                return Encoding.UTF8.GetString(Convert.FromBase64String(value));
+            }
+            catch (FormatException)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Guarantees that Lidarr can tie the release to the album it was searched for.
+        ///
+        /// Every route from a release back to an artist and album goes through parsing a title: the
+        /// decision engine parses the release title, and the queue parses the same title again out of
+        /// history. The last-resort parser looks for the library's artist and album inside the title
+        /// with their exact punctuation, so a folder named "The Signature Series Volume 1" can never
+        /// satisfy it when the library says "The Signature Series, Volume 1:".
+        ///
+        /// When the title as built would not satisfy that parser, the library's own names are added to
+        /// it — the artist in front, the album in brackets at the end — which makes the match hold by
+        /// construction. Titles that already satisfy it are left alone.
+        /// </summary>
+        private static string EnsureMappableTitle(string title, string artistName, string albumTitle)
+        {
+            if (artistName.IsNullOrWhiteSpace() || albumTitle.IsNullOrWhiteSpace() || title.IsNullOrWhiteSpace())
+            {
+                return title;
+            }
+
+            // Mirrors Parser.ParseAlbumTitleWithSearchCriteria: accents are stripped from the names,
+            // spaces match any separator, remaining punctuation is literal
+            var artist = (artistName == "Various Artists" ? "VA" : artistName).RemoveAccent();
+            var album = albumTitle.RemoveAccent();
+            var escapedArtist = Regex.Escape(artist).Replace(@"\ ", @"[\W_]");
+            var escapedAlbum = Regex.Escape(album).Replace(@"\ ", @"[\W_]");
+
+            var criteriaRegex = new Regex(
+                @"^(\W*|\b)(" + escapedArtist + @")(\W*|\b).*(\W*|\b)(" + escapedAlbum + @")(\W*|\b)",
+                RegexOptions.IgnoreCase);
+
+            if (criteriaRegex.IsMatch(title))
+            {
+                return title;
+            }
+
+            var annotated = Regex.IsMatch(title, @"^(\W*|\b)" + escapedArtist + @"(\W*|\b)", RegexOptions.IgnoreCase)
+                ? title
+                : $"{artist} {title}";
+
+            if (!criteriaRegex.IsMatch(annotated))
+            {
+                annotated = $"{annotated} [{album}]";
+            }
+
+            return criteriaRegex.IsMatch(annotated) ? annotated : title;
         }
 
         private SearchResult GetInitialSearchResult(IndexerResponse indexerResponse)
@@ -80,10 +162,9 @@ namespace NzbDrone.Core.Indexers.Slskd
         /// </summary>
         private bool WaitForSearchCompletion(string searchId)
         {
-            var budget = TimeSpan.FromSeconds(Math.Max(_settings.SearchTimeout, 1));
             var stopwatch = Stopwatch.StartNew();
 
-            while (stopwatch.Elapsed < budget)
+            while (stopwatch.Elapsed < SearchBudget)
             {
                 if (GetSearchResult(searchId, includeResponses: false).IsComplete)
                 {
@@ -125,8 +206,6 @@ namespace NzbDrone.Core.Indexers.Slskd
                 .AddQueryParam("includeResponses", includeResponses.ToString().ToLowerInvariant())
                 .Build();
 
-            request.RateLimit = _rateLimit;
-
             try
             {
                 var response = _httpClient.Get(request);
@@ -145,7 +224,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             }
         }
 
-        private IList<ReleaseInfo> ProcessSearchResults(SearchResult searchResult, int expectedTrackCount)
+        private IList<ReleaseInfo> ProcessSearchResults(SearchResult searchResult, int expectedTrackCount, string artistName, string albumTitle)
         {
             var releases = new List<ReleaseInfo>();
 
@@ -163,13 +242,13 @@ namespace NzbDrone.Core.Indexers.Slskd
                     continue;
                 }
 
-                ProcessUserResponse(response, searchResult.Id, expectedTrackCount, releases);
+                ProcessUserResponse(response, searchResult.Id, expectedTrackCount, artistName, albumTitle, releases);
             }
 
             return releases.OrderByDescending(r => r.Size).ToList();
         }
 
-        private void ProcessUserResponse(SearchResponse response, string searchId, int expectedTrackCount, List<ReleaseInfo> releases)
+        private void ProcessUserResponse(SearchResponse response, string searchId, int expectedTrackCount, string artistName, string albumTitle, List<ReleaseInfo> releases)
         {
             var rawGroups = response.Files
                 .Cast<SlskdFile>()
@@ -185,7 +264,7 @@ namespace NzbDrone.Core.Indexers.Slskd
                     continue;
                 }
 
-                var releaseInfo = CreateReleaseInfo(audioFiles, response, searchId, groupKey, expectedTrackCount);
+                var releaseInfo = CreateReleaseInfo(audioFiles, response, searchId, groupKey, expectedTrackCount, artistName, albumTitle);
                 if (releaseInfo != null)
                 {
                     releases.Add(releaseInfo);
@@ -229,7 +308,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             return false;
         }
 
-        private ReleaseInfo CreateReleaseInfo(List<SlskdFile> audioFiles, SearchResponse response, string searchId, string groupKey, int expectedTrackCount)
+        private ReleaseInfo CreateReleaseInfo(List<SlskdFile> audioFiles, SearchResponse response, string searchId, string groupKey, int expectedTrackCount, string artistName, string albumTitle)
         {
             var isSingleFile = audioFiles.Count == 1;
             var downloadPath = isSingleFile ? audioFiles[0].FileName : groupKey;
@@ -241,25 +320,45 @@ namespace NzbDrone.Core.Indexers.Slskd
                 AudioFileCount = audioFiles.Count,
                 ExpectedTrackCount = expectedTrackCount,
                 Guid = identifier,
-                Title = FileProcessingUtils.BuildTitle(audioFiles),
+                Title = EnsureMappableTitle(
+                    FileProcessingUtils.BuildTitle(audioFiles) + DescribePeer(response),
+                    artistName,
+                    albumTitle),
                 DownloadUrl = downloadPath,
                 InfoUrl = $"{_settings.BaseUrl}searches/{searchId}",
                 Size = totalSize,
+
+                // Soulseek search results carry no date, so the only truthful publish date is the moment
+                // the result was seen. Nothing is lost by it: Lidarr compares age for usenet only.
+                PublishDate = DateTime.UtcNow,
                 Source = response.Username,
                 Origin = searchId,
                 DownloadProtocol = nameof(SlskdDownloadProtocol),
             };
 
-            if (response.UploadSpeed > 0)
-            {
-                var uploadDurationMinutes = Math.Max(1, (totalSize / (double)response.UploadSpeed) / 60.0);
+            return releaseInfo;
+        }
 
-                // Subtract so faster uploads (smaller duration) produce a more recent PublishDate
-                // and are ranked first by Lidarr's newest-first sort
-                releaseInfo.PublishDate = DateTime.UtcNow.AddMinutes(-uploadDurationMinutes);
+        /// <summary>
+        /// Appends how well the peer can actually serve the release: its upload speed, and its queue when
+        /// the transfer would not start straight away.
+        ///
+        /// This rides in the title because no field of ReleaseInfo reaches the interactive search view,
+        /// and Lidarr's ranking ignores it: peers are compared for torrents only. It is a trailing
+        /// annotation, in the same position as the codec and bitrate, and leaves the parse untouched.
+        /// </summary>
+        private static string DescribePeer(SearchResponse response)
+        {
+            if (response.UploadSpeed <= 0)
+            {
+                return string.Empty;
             }
 
-            return releaseInfo;
+            var speed = $"{response.UploadSpeed / (double)BytesPerMegabyte:0.#} MB/s";
+
+            return response.QueueLength > 0
+                ? $" [{speed}, queued behind {response.QueueLength}]"
+                : $" [{speed}]";
         }
     }
 }
