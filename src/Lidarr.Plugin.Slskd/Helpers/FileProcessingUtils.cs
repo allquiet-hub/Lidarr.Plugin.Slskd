@@ -56,6 +56,18 @@ public static class FileProcessingUtils
         return lastSep > 0 ? path[..lastSep] : path;
     }
 
+    private static readonly Regex DriveLetterPattern = new (@"^[a-z]:$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex WordPattern = new (@"[\p{L}\p{Nd}]+", RegexOptions.Compiled);
+    private static readonly Regex LetterRunPattern = new (@"[^\p{L}\s]", RegexOptions.Compiled);
+
+    // Matched as prefixes against the letters of a folder name, so "Music99", "musics" and
+    // "MusicLibrary" are all recognised as collection folders rather than artist names.
+    private static readonly string[] GenericFolderStems =
+    {
+        "music", "share", "complete", "download", "soulseek", "library", "collection",
+        "various artists", "sorted", "unsorted", "misc", "upload", "media"
+    };
+
     private static readonly HashSet<string> _folderToIgnore = new (StringComparer.OrdinalIgnoreCase)
     {
         "Soulseek", "Soulseek Downloads", "Soulseek Shared Folder", "FOR SOULSEEK", "soulseek to share",
@@ -146,13 +158,22 @@ public static class FileProcessingUtils
         }
 
         var firstFile = files.First();
-        var parts = firstFile.ParentPath.Split('\\')
-            .Where(s => !_folderToIgnore.Contains(s) &&
-                       !IsAudioExtension(s) &&
+        var segments = firstFile.ParentPath?.Split('\\') ?? Array.Empty<string>();
+
+        // The first segment of a Soulseek path is the share root, never the artist: it is the user's own
+        // folder name ("redtopia", "musics", "@@hnttf", "d:"). Every layout that parses correctly has the
+        // artist deeper in the tree, so the root is never allowed to become part of the title.
+        var shareRoot = segments.FirstOrDefault();
+
+        // Only structural noise is dropped here; the album folder itself is always kept, even when it
+        // happens to mention a format ("Inspired R3HAB - Various Artists [2015][flac]").
+        var parts = segments
+            .Where(s => !IsAudioExtension(s) &&
                        !IsDiscFolder(s) &&
                        !s.StartsWith("@@") &&
                        !s.StartsWith("_") &&
                        !s.StartsWith("smb-share:") &&
+                       !DriveLetterPattern.IsMatch(s) &&
                        s.Length > 1)
             .ToArray();
 
@@ -160,12 +181,33 @@ public static class FileProcessingUtils
             ? firstFile.Name[..^(firstFile.Extension.Length + 1)]
             : firstFile.Name;
 
-        var folderInfo = parts.Length switch
+        string folderInfo;
+
+        if (parts.Length == 0)
         {
-            0 => fileName,
-            1 => parts[0],
-            _ => parts[^2].Contains(parts[^1]) ? parts[^2] : string.Join(" ", parts[^2..])
-        };
+            folderInfo = fileName;
+        }
+        else
+        {
+            var leaf = parts[^1];
+            var parent = parts.Length > 1 ? parts[^2] : null;
+
+            // The parent is prepended only when it can plausibly be the artist
+            var parentIsArtist = parent != null &&
+                                 !IsContainerFolder(parent) &&
+                                 !IsQualityBucketFolder(parent) &&
+                                 !parent.Equals(shareRoot, StringComparison.OrdinalIgnoreCase);
+
+            if (parentIsArtist)
+            {
+                folderInfo = parent.Contains(leaf, StringComparison.OrdinalIgnoreCase) ? parent : $"{parent} {leaf}";
+            }
+            else
+            {
+                // A bare collection folder as the only candidate says nothing about the release
+                folderInfo = IsContainerFolder(leaf) ? fileName : leaf;
+            }
+        }
 
         return string.Join(" ", new[]
         {
@@ -176,6 +218,41 @@ public static class FileProcessingUtils
             DetermineVbr(files)
         }.Where(s => !string.IsNullOrEmpty(s)));
     }
+
+    /// <summary>
+    /// Recognises the collection folders users keep their library in, which say nothing about the
+    /// release and only confuse Lidarr's title parsing when prepended to the album name.
+    /// Matched on a stem rather than by exact name, because the variations are endless: "Music99",
+    /// "musics" and "MusicLibrary" all have to collapse onto the same "music" root.
+    /// </summary>
+    public static bool IsContainerFolder(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return true;
+        }
+
+        if (_folderToIgnore.Contains(name) || DriveLetterPattern.IsMatch(name))
+        {
+            return true;
+        }
+
+        // Compare on letters only, so trailing counters like "Music99" collapse onto their stem
+        var letters = LetterRunPattern.Replace(name, string.Empty).Trim().ToLowerInvariant();
+        letters = Regex.Replace(letters, @"\s+", " ");
+
+        return letters.Length > 0 &&
+               GenericFolderStems.Any(stem => letters.StartsWith(stem, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A folder naming an audio format is a quality bucket ("Redtopia FLAC 05", "MP3 320"), never an
+    /// artist. Only applied to parent folders: album folders legitimately mention the format, as in
+    /// "Inspired R3HAB - Various Artists [2015][flac]".
+    /// </summary>
+    private static bool IsQualityBucketFolder(string name) =>
+        !string.IsNullOrWhiteSpace(name) &&
+        WordPattern.Matches(name).Any(m => ValidAudioExtensions.Contains(m.Value.ToLowerInvariant()));
 
     private static bool IsAudioExtension(string s) =>
         ValidAudioExtensions.Any(ext =>
