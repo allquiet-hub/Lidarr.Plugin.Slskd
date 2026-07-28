@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.Linq;
+using System.Net.Http;
+using System.Threading;
 using NLog;
 using NzbDrone.Common.Http;
 using NzbDrone.Common.Serializer;
@@ -14,8 +17,7 @@ namespace NzbDrone.Core.Indexers.Slskd
 {
     public class SlskdParser : IParseIndexerResponse
     {
-        // Constants
-        private const int SearchTimeoutBuffer = 5;
+        private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(750);
 
         private readonly ProviderDefinition _definition;
         private readonly SlskdIndexerSettings _settings;
@@ -44,15 +46,27 @@ namespace NzbDrone.Core.Indexers.Slskd
                 throw new ArgumentNullException(nameof(indexerResponse));
             }
 
-            Json.TryDeserialize<SearchRequest>(indexerResponse.HttpRequest.ContentSummary, out var searchRequest);
             var searchResult = GetInitialSearchResult(indexerResponse);
-            var searchTimeout = CalculateSearchTimeout(searchRequest);
-            WaitForSearchCompletion(searchResult.Id, searchTimeout);
 
-            // Re-fetch with responses
+            if (!WaitForSearchCompletion(searchResult.Id))
+            {
+                // Abandoning the tier is better than throwing: a slow search would otherwise fail the
+                // whole feed and mark the indexer unhealthy, when the next query may well succeed
+                _logger.Warn($"Search {searchResult.Id} was still running after {_settings.SearchTimeout}s, abandoning it");
+                CancelSearch(searchResult.Id);
+                return new List<ReleaseInfo>();
+            }
+
+            // Re-fetch with responses: slskd withholds the response bodies until the search completes
             searchResult = GetSearchResult(searchResult.Id, includeResponses: true);
 
-            return ProcessSearchResults(searchResult, searchRequest?.MinimumResponseFileCount);
+            return ProcessSearchResults(searchResult, GetExpectedTrackCount(indexerResponse.HttpRequest));
+        }
+
+        private static int GetExpectedTrackCount(HttpRequest request)
+        {
+            var header = request?.Headers?[SlskdRequestGenerator.ExpectedTrackCountHeader];
+            return int.TryParse(header, NumberStyles.Integer, CultureInfo.InvariantCulture, out var count) ? count : 0;
         }
 
         private SearchResult GetInitialSearchResult(IndexerResponse indexerResponse)
@@ -61,26 +75,45 @@ namespace NzbDrone.Core.Indexers.Slskd
             return searchResult ?? throw new InvalidOperationException("Failed to parse initial search result.");
         }
 
-        private int CalculateSearchTimeout(SearchRequest searchRequest)
+        /// <summary>
+        /// Polls until slskd marks the search complete, giving up once the configured budget is spent.
+        /// </summary>
+        private bool WaitForSearchCompletion(string searchId)
         {
-            // SearchTimeout on the request is already in ms; the setting is in seconds
-            var searchTimeoutMs = searchRequest?.SearchTimeout ?? (_settings.SearchTimeout * 1000);
-            return searchTimeoutMs + (SearchTimeoutBuffer * 1000);
-        }
-
-        private void WaitForSearchCompletion(string searchId, int timeout)
-        {
+            var budget = TimeSpan.FromSeconds(Math.Max(_settings.SearchTimeout, 1));
             var stopwatch = Stopwatch.StartNew();
-            while (stopwatch.ElapsedMilliseconds < timeout)
+
+            while (stopwatch.Elapsed < budget)
             {
-                var searchResult = GetSearchResult(searchId, includeResponses: false);
-                if (searchResult.IsComplete)
+                if (GetSearchResult(searchId, includeResponses: false).IsComplete)
                 {
-                    return;
+                    return true;
                 }
+
+                // Without an explicit interval the loop is paced only by Lidarr's rate limiter, which
+                // costs a lot of round trips for no gain
+                Thread.Sleep(PollInterval);
             }
 
-            throw new TimeoutException($"Search {searchId} did not complete within {timeout}ms.");
+            return false;
+        }
+
+        private void CancelSearch(string searchId)
+        {
+            try
+            {
+                var request = new HttpRequestBuilder(_settings.BaseUrl)
+                    .Resource($"api/v0/searches/{searchId}")
+                    .SetHeader("X-API-Key", _settings.ApiKey)
+                    .Build();
+
+                request.Method = HttpMethod.Delete;
+                _httpClient.Execute(request);
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug(ex, $"Could not cancel search {searchId}");
+            }
         }
 
         private SearchResult GetSearchResult(string searchId, bool includeResponses)
@@ -112,7 +145,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             }
         }
 
-        private IList<ReleaseInfo> ProcessSearchResults(SearchResult searchResult, int? minimumFileCount)
+        private IList<ReleaseInfo> ProcessSearchResults(SearchResult searchResult, int expectedTrackCount)
         {
             var releases = new List<ReleaseInfo>();
 
@@ -130,13 +163,13 @@ namespace NzbDrone.Core.Indexers.Slskd
                     continue;
                 }
 
-                ProcessUserResponse(response, searchResult.Id, minimumFileCount, releases);
+                ProcessUserResponse(response, searchResult.Id, expectedTrackCount, releases);
             }
 
             return releases.OrderByDescending(r => r.Size).ToList();
         }
 
-        private void ProcessUserResponse(SearchResponse response, string searchId, int? minimumFileCount, List<ReleaseInfo> releases)
+        private void ProcessUserResponse(SearchResponse response, string searchId, int expectedTrackCount, List<ReleaseInfo> releases)
         {
             var rawGroups = response.Files
                 .Cast<SlskdFile>()
@@ -147,12 +180,12 @@ namespace NzbDrone.Core.Indexers.Slskd
                 FileProcessingUtils.EnsureFileExtensions(files);
                 var audioFiles = files.FilterValidAudioFiles().ToList();
 
-                if (!IsValidAudioGroup(audioFiles, groupKey, response.Username, minimumFileCount))
+                if (!IsValidAudioGroup(audioFiles, groupKey, response.Username))
                 {
                     continue;
                 }
 
-                var releaseInfo = CreateReleaseInfo(audioFiles, response, searchId, groupKey);
+                var releaseInfo = CreateReleaseInfo(audioFiles, response, searchId, groupKey, expectedTrackCount);
                 if (releaseInfo != null)
                 {
                     releases.Add(releaseInfo);
@@ -185,33 +218,28 @@ namespace NzbDrone.Core.Indexers.Slskd
             return merged.Select(kv => (kv.Key, kv.Value)).ToList();
         }
 
-        private bool IsValidAudioGroup(List<SlskdFile> audioFiles, string groupKey, string username, int? minimumFileCount)
+        private bool IsValidAudioGroup(List<SlskdFile> audioFiles, string groupKey, string username)
         {
-            if (!audioFiles.Any())
-            {
-                _logger.Debug($"Ignored result {groupKey} from user {username}: no audio files found");
-                return false;
-            }
-
-            if (!minimumFileCount.HasValue || !(audioFiles.Count < minimumFileCount))
+            if (audioFiles.Any())
             {
                 return true;
             }
 
-            _logger.Debug($"Ignored result {groupKey} from user {username}: " +
-                          $"{audioFiles.Count} files < minimum {minimumFileCount}");
+            _logger.Debug($"Ignored result {groupKey} from user {username}: no audio files found");
             return false;
         }
 
-        private ReleaseInfo CreateReleaseInfo(List<SlskdFile> audioFiles, SearchResponse response, string searchId, string groupKey)
+        private ReleaseInfo CreateReleaseInfo(List<SlskdFile> audioFiles, SearchResponse response, string searchId, string groupKey, int expectedTrackCount)
         {
             var isSingleFile = audioFiles.Count == 1;
             var downloadPath = isSingleFile ? audioFiles[0].FileName : groupKey;
             var identifier = Crc32Hasher.Crc32Base64($"{response.Username}{groupKey}");
 
             var totalSize = audioFiles.Sum(file => file.Size);
-            var releaseInfo = new ReleaseInfo
+            var releaseInfo = new SlskdReleaseInfo
             {
+                AudioFileCount = audioFiles.Count,
+                ExpectedTrackCount = expectedTrackCount,
                 Guid = identifier,
                 Title = FileProcessingUtils.BuildTitle(audioFiles),
                 DownloadUrl = downloadPath,
