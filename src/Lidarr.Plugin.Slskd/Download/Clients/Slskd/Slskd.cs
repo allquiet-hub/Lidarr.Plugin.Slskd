@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using FluentValidation.Results;
 using NLog;
@@ -7,6 +8,7 @@ using NzbDrone.Common.Disk;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Http;
 using NzbDrone.Core.Configuration;
+using NzbDrone.Core.Exceptions;
 using NzbDrone.Core.Indexers;
 using NzbDrone.Core.Localization;
 using NzbDrone.Core.Parser.Model;
@@ -57,10 +59,30 @@ namespace NzbDrone.Core.Download.Clients.Slskd
         {
             var release = remoteAlbum.Release;
 
-            // The identifier travels with the release instead of being recomputed from the download path:
-            // that path is the folder for albums but the file itself for single-file releases, so
-            // deriving it a second time here would not always agree with what the queue reports.
-            return Task.FromResult(_proxy.Download(release.Origin, release.Source, release.DownloadUrl, release.Guid, Settings));
+            try
+            {
+                // The identifier travels with the release instead of being recomputed from the download
+                // path: that path is the folder for albums but the file itself for single-file releases,
+                // so deriving it a second time here would not always agree with what the queue reports.
+                // The completed folder is named "Artist - Album" because that name does double duty:
+                // Lidarr identifies what it imported largely from it, and the queue maps a download back
+                // to its album only by parsing a title, never by the ids already sitting in history.
+                // A parsed title resolves through normalised lookups that forgive punctuation, while the
+                // history fallback demands the library's exact punctuation inside a stranger's folder name.
+                var album = remoteAlbum.Albums?.FirstOrDefault();
+                var artistName = remoteAlbum.Artist?.Name ?? album?.Artist?.Value?.Name;
+                var folderName = album?.Title == null || artistName == null
+                    ? album?.Title
+                    : $"{artistName} - {album.Title}";
+
+                return Task.FromResult(_proxy.Download(release.Origin, release.Source, release.DownloadUrl, release.Guid, folderName, Settings));
+            }
+            catch (SlskdPeerUnavailableException ex)
+            {
+                // Reported as unavailable rather than as a download failure, so Lidarr tries the next
+                // release without holding the indexer responsible for an unreachable peer
+                throw new ReleaseUnavailableException(release, ex.Message, ex);
+            }
         }
 
         public override DownloadClientInfo GetStatus()

@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Threading;
 using NLog;
 using NzbDrone.Common.Crypto;
 using NzbDrone.Common.Disk;
@@ -29,6 +30,8 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
         private static readonly TimeSpan CapabilityCacheDuration = TimeSpan.FromMinutes(5);
 
+        private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(500);
+
         private readonly IHttpClient _httpClient;
         private readonly Logger _logger;
 
@@ -37,13 +40,10 @@ namespace NzbDrone.Core.Download.Clients.Slskd
         private readonly ConcurrentDictionary<string, BatchOptions> _batchOptionsCache = new ();
         private readonly ConcurrentDictionary<string, (DateTime Expiry, bool Supported)> _batchSupportCache = new ();
 
-        private TimeSpan _rateLimit;
-
         public SlskdProxy(IHttpClient httpClient, Logger logger)
         {
             _httpClient = httpClient;
             _logger = logger;
-            _rateLimit = TimeSpan.FromMilliseconds(500);
         }
 
         // Core Public Methods
@@ -138,11 +138,17 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
                         string key;
                         OsPath outputPath;
+                        string titleBase = null;
 
                         if (batchDownloadId != null)
                         {
                             key = batchDownloadId;
                             outputPath = completedDownloadsPath + DestinationRoot + batchDownloadId;
+
+                            // The destination folder is named "Artist - Album" at enqueue time precisely
+                            // so the queue can hand Lidarr a parseable title: parsing is the only route
+                            // by which a tracked download gets mapped back to its album.
+                            titleBase = GetBatchAlbumFolder(batch.Key);
                         }
                         else
                         {
@@ -156,7 +162,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
                         if (!groups.TryGetValue(key, out var group))
                         {
-                            groups[key] = group = new QueueGroup(queue.Username, outputPath);
+                            groups[key] = group = new QueueGroup(queue.Username, outputPath, titleBase);
                         }
 
                         group.Files.AddRange(files);
@@ -186,7 +192,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 var downloadClientItem = new DownloadClientItem
                 {
                     DownloadId = identifier,
-                    Title = FileProcessingUtils.BuildTitle(audioFiles),
+                    Title = FileProcessingUtils.BuildTitle(audioFiles, group.TitleBase),
                     TotalSize = totalSize,
                     RemainingSize = remainingSize,
                     Status = status,
@@ -207,7 +213,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             return items;
         }
 
-        public string Download(string searchId, string username, string downloadPath, string identifier, SlskdSettings settings)
+        public string Download(string searchId, string username, string downloadPath, string identifier, string albumTitle, SlskdSettings settings)
         {
             if (settings == null)
             {
@@ -240,10 +246,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             }
 
             // Match files at the exact path or in disc sub-folders under the path
-            var files = userResponse.Files.Where(f =>
-                f.FileName == downloadPath ||
-                f.ParentPath == downloadPath ||
-                (f.ParentPath?.StartsWith(downloadPath + "\\", StringComparison.OrdinalIgnoreCase) == true)).ToList();
+            var files = userResponse.Files.Where(f => BelongsToRelease(f, downloadPath)).ToList();
 
             var audioFiles = files.FilterValidAudioFiles();
             if (!audioFiles.Any())
@@ -258,7 +261,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
             if (SupportsBatches(settings))
             {
-                EnqueueBatches(searchId, username, albumPath, audioFiles, identifier, settings);
+                EnqueueBatches(searchId, username, albumPath, audioFiles, identifier, albumTitle, settings);
             }
             else
             {
@@ -331,7 +334,13 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                     continue;
                 }
 
-                WaitForFileCompleted(username, file.Id, settings);
+                // The queue already reported the state, so only transfers still running need to be
+                // waited on before slskd will let go of the file
+                if (file.TransferState?.State != TransferStates.Completed)
+                {
+                    WaitForFileCompleted(username, file.Id, settings);
+                }
+
                 CancelUserDownloadFile(username, file.Id, true, settings);
             }
 
@@ -368,11 +377,16 @@ namespace NzbDrone.Core.Download.Clients.Slskd
         /// expression configured in slskd. The download ID is carried by the destination itself: the
         /// external ID is sent as well, but slskd 0.26.0 never exposes it back through the API.
         /// </summary>
-        private void EnqueueBatches<T>(string searchId, string username, string albumPath, List<T> audioFiles, string identifier, SlskdSettings settings)
+        private void EnqueueBatches<T>(string searchId, string username, string albumPath, List<T> audioFiles, string identifier, string albumTitle, SlskdSettings settings)
             where T : SlskdFile
         {
-            var albumFolder = FileProcessingUtils.SanitizePathSegment(albumPath.Split('\\').LastOrDefault());
+            // Lidarr identifies what it imported largely from this folder name, so it is named after the
+            // album that was grabbed rather than after the remote folder, which belongs to the sharer and
+            // for a lone track is usually just the artist.
+            var albumFolder = FileProcessingUtils.SanitizePathSegment(albumTitle)
+                              ?? FileProcessingUtils.SanitizePathSegment(albumPath.Split('\\').LastOrDefault());
             var destinationPrefix = $"{DestinationRoot}/{identifier}";
+            var enqueued = new List<string>();
 
             foreach (var group in audioFiles.GroupBy(f => f.ParentPath ?? string.Empty, StringComparer.OrdinalIgnoreCase))
             {
@@ -397,8 +411,26 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                     }
                 };
 
-                var response = ExecutePost<EnqueueBatchResponse>(
-                    BuildRequest(settings, "/api/v0/transfers/downloads/batches/"), body.ToJson());
+                EnqueueBatchResponse response;
+
+                try
+                {
+                    response = ExecutePost<EnqueueBatchResponse>(
+                        BuildRequest(settings, "/api/v0/transfers/downloads/batches/"), body.ToJson());
+                }
+                catch (HttpException httpException) when (httpException.Response?.StatusCode == HttpStatusCode.InternalServerError)
+                {
+                    // The request itself was well formed, otherwise slskd would have rejected it with a
+                    // 400, so a server error here means it could not reach the peer holding the files
+                    if (enqueued.Any())
+                    {
+                        _logger.Warn($"Enqueue failed partway through for '{identifier}', discarding the batches already sent");
+                        DiscardBatches(enqueued, settings);
+                    }
+
+                    throw new SlskdPeerUnavailableException(
+                        $"Slskd could not reach user {username}: {httpException.Response?.Content}", httpException);
+                }
 
                 foreach (var failure in response?.Failures ?? new List<EnqueueBatchFailure>())
                 {
@@ -407,8 +439,34 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
                 if (response?.Batch?.Id != null)
                 {
+                    enqueued.Add(response.Batch.Id);
+
                     // Seed the cache so the first queue poll does not need to look the batch up
                     CacheBatchOptions(response.Batch.Id, body.Options);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Cancels transfers from batches that were accepted before a later one failed, so a release is
+        /// never left half enqueued.
+        /// </summary>
+        private void DiscardBatches(IEnumerable<string> batchIds, SlskdSettings settings)
+        {
+            foreach (var batchId in batchIds)
+            {
+                try
+                {
+                    var batch = ExecuteGet<Batch>(BuildRequest(settings, $"/api/v0/transfers/downloads/batches/{batchId}/"));
+
+                    foreach (var transfer in batch?.Transfers ?? new List<DirectoryFile>())
+                    {
+                        CancelUserDownloadFile(batch.Username, transfer.Id, true, settings);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.Debug(ex, $"Could not discard batch '{batchId}'");
                 }
             }
         }
@@ -474,6 +532,47 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             _batchOptionsCache[batchId] = options;
         }
 
+        /// <summary>
+        /// Decides whether a file is part of the release being grabbed.
+        ///
+        /// Only disc sub-folders count as part of the same release, matching how the search groups them.
+        /// Sharers often keep alternate encodings beside the originals ("[album]\AAC", "[album]\MP3"),
+        /// and those were offered as separate releases of their own: pulling them in would download the
+        /// same album several times over.
+        /// </summary>
+        private static bool BelongsToRelease(SlskdFile file, string downloadPath)
+        {
+            if (string.Equals(file.FileName, downloadPath, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(file.ParentPath, downloadPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var prefix = downloadPath + "\\";
+            if (file.ParentPath?.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) != true)
+            {
+                return false;
+            }
+
+            var subFolder = file.ParentPath[prefix.Length..];
+            return !subFolder.Contains('\\') && FileProcessingUtils.IsDiscFolder(subFolder);
+        }
+
+        /// <summary>
+        /// Reads the "Artist - Album" folder back out of a batch destination of the form
+        /// 'lidarr/[downloadId]/[folder](/DiscN)'. Null for batches created outside of Lidarr.
+        /// </summary>
+        private string GetBatchAlbumFolder(string batchId)
+        {
+            if (string.IsNullOrEmpty(batchId) || !_batchOptionsCache.TryGetValue(batchId, out var options))
+            {
+                return null;
+            }
+
+            var segments = options?.Destination?.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+            return segments?.Length >= 3 ? segments[2] : null;
+        }
+
         private static string GetCanonicalDirectory(string directory)
         {
             var dirName = directory?.Split('\\').LastOrDefault() ?? string.Empty;
@@ -504,7 +603,8 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                     throw new DownloadClientException($"Error getting directory information: {directory}");
                 }
 
-                _logger.Warn($"Directory '{directory}' does not exist on disk. Skipping deletion.");
+                // Expected once Lidarr has imported by moving the files: it removes the folder it emptied
+                _logger.Debug($"Directory '{directory}' does not exist on disk, nothing to delete");
                 return;
             }
 
@@ -575,15 +675,16 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
             while (stopwatch.Elapsed < timeout)
             {
-                var fileRequest = BuildRequest(settings, $"/api/v0/transfers/downloads/{username}/{fileId}/");
-                fileRequest.RateLimit = _rateLimit;
-
-                var file = ExecuteGet<DirectoryFile>(fileRequest);
+                var file = ExecuteGet<DirectoryFile>(BuildRequest(settings, $"/api/v0/transfers/downloads/{username}/{fileId}/"));
                 if (file?.TransferState?.State == TransferStates.Completed)
                 {
                     _logger.Trace($"File '{fileId}' for user '{username}' is marked as completed.");
                     return;
                 }
+
+                // Paced here rather than through Lidarr's rate limiter, which is keyed by host and would
+                // make these polls contend with the indexer's own requests to the same slskd instance
+                Thread.Sleep(PollInterval);
             }
 
             _logger.Warn($"Timeout waiting for file '{fileId}' to complete for user '{username}'.");
@@ -591,14 +692,16 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
         private sealed class QueueGroup
         {
-            public QueueGroup(string username, OsPath outputPath)
+            public QueueGroup(string username, OsPath outputPath, string titleBase)
             {
                 Username = username;
                 OutputPath = outputPath;
+                TitleBase = titleBase;
             }
 
             public string Username { get; }
             public OsPath OutputPath { get; }
+            public string TitleBase { get; }
             public List<DirectoryFile> Files { get; } = new ();
         }
     }
