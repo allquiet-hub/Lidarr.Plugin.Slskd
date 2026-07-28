@@ -56,7 +56,11 @@ namespace NzbDrone.Core.Download.Clients.Slskd
         public override Task<string> Download(RemoteAlbum remoteAlbum, IIndexer indexer)
         {
             var release = remoteAlbum.Release;
-            return Task.FromResult(_proxy.Download(release.Origin, release.Source, release.DownloadUrl, Settings));
+
+            // The identifier travels with the release instead of being recomputed from the download path:
+            // that path is the folder for albums but the file itself for single-file releases, so
+            // deriving it a second time here would not always agree with what the queue reports.
+            return Task.FromResult(_proxy.Download(release.Origin, release.Source, release.DownloadUrl, release.Guid, Settings));
         }
 
         public override DownloadClientInfo GetStatus()

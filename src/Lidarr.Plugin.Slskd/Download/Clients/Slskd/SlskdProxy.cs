@@ -8,6 +8,7 @@ using System.Net.Http;
 using NLog;
 using NzbDrone.Common.Crypto;
 using NzbDrone.Common.Disk;
+using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Http;
 using NzbDrone.Common.Serializer;
 using NzbDrone.Plugin.Slskd.Helpers;
@@ -206,11 +207,16 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             return items;
         }
 
-        public string Download(string searchId, string username, string downloadPath, SlskdSettings settings)
+        public string Download(string searchId, string username, string downloadPath, string identifier, SlskdSettings settings)
         {
             if (settings == null)
             {
                 throw new ArgumentNullException(nameof(settings));
+            }
+
+            if (identifier.IsNullOrWhiteSpace())
+            {
+                throw new DownloadClientException($"Release has no identifier, cannot track the download: {downloadPath}");
             }
 
             var request = BuildRequest(settings, $"/api/v0/searches/{searchId}/")
@@ -245,13 +251,10 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 throw new DownloadClientException($"No files found for path: {downloadPath}");
             }
 
-            // For single-file releases the parser hands over the file path rather than the folder;
-            // the identifier is always computed on the folder so it matches ReleaseInfo.Guid.
+            // For single-file releases the parser hands over the file path rather than the folder
             var albumPath = audioFiles.Any(f => string.Equals(f.FileName, downloadPath, StringComparison.OrdinalIgnoreCase))
                 ? FileProcessingUtils.GetParentPath(downloadPath)
                 : downloadPath;
-
-            var identifier = Crc32Hasher.Crc32Base64($"{username}{albumPath}");
 
             if (SupportsBatches(settings))
             {

@@ -15,7 +15,7 @@ public interface ISlskdProxy
 
     List<DownloadClientItem> GetQueue(SlskdSettings settings);
 
-    string Download(string searchId, string username, string downloadPath, SlskdSettings settings);
+    string Download(string searchId, string username, string downloadPath, string identifier, SlskdSettings settings);
 
     void RemoveFromQueue(string downloadId, bool deleteData, SlskdSettings settings);
 }
