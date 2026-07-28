@@ -41,8 +41,9 @@ public class BatchOptions
     public string Destination { get; set; }
 
     /// <summary>
-    /// Accepted on enqueue but not returned by slskd 0.26.0, so it cannot be used to correlate a batch
-    /// back to a Lidarr download. It is still sent so the '${BATCH_EXTERNAL_ID}' token resolves for users.
+    /// Accepted on enqueue but never returned by slskd 0.26.0, so it cannot be used to correlate a batch
+    /// back to a Lidarr download. It is still sent so the '${BATCH_EXTERNAL_ID}' token resolves for users
+    /// who reference it in their own destination expression.
     /// </summary>
     [JsonProperty("externalId")]
     public string ExternalId { get; set; }
