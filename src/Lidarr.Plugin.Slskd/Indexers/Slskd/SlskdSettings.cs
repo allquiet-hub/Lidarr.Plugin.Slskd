@@ -30,7 +30,7 @@ namespace NzbDrone.Core.Indexers.Slskd
         [FieldDefinition(2, Type = FieldType.Number, Label = "Early Download Limit", Unit = "days", HelpText = "Days before release date to allow downloads. Empty is no limit", Advanced = true)]
         public int? EarlyReleaseLimit { get; set; }
 
-        [FieldDefinition(3, Type = FieldType.KeyValueList, Label = "Ignored Users", HelpText = "Users to skip when searching. Add your own username to avoid downloading your own shares. Keys are just labels")]
+        [FieldDefinition(3, Type = FieldType.KeyValueList, Label = "Ignored Users", HelpText = "Additional users to skip when searching. Your own slskd account is already excluded. Keys are just labels")]
         public IEnumerable<KeyValuePair<string, string>> IgnoredUsers { get; set; }
 
         [FieldDefinition(4, Type = FieldType.Number, Label = "Minimum Upload Speed", Unit = "MB/s", HelpText = "Hide results from users uploading slower than this. Decimals allowed, 0 shows everyone", Advanced = true)]

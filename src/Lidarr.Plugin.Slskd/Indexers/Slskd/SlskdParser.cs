@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -30,6 +31,18 @@ namespace NzbDrone.Core.Indexers.Slskd
         /// only stops a search whose results never stop trickling in from stalling the whole chain.
         /// </summary>
         private static readonly TimeSpan SearchBudget = TimeSpan.FromSeconds(30);
+
+        /// <summary>
+        /// Own username per slskd instance, so that this instance's own shares are never offered back
+        /// as releases. It is read from slskd instead of being configured because slskd already knows
+        /// it. The options endpoint is the source: the server endpoint looks like the better one since
+        /// it describes the live connection, and its schema does declare a username, but the field is
+        /// absent from what it actually serialises. Cached because a parser is built for every search.
+        /// </summary>
+        private static readonly ConcurrentDictionary<string, (string Username, DateTime ResolvedAt)> LocalUsernames =
+            new ConcurrentDictionary<string, (string Username, DateTime ResolvedAt)>();
+
+        private static readonly TimeSpan LocalUsernameLifetime = TimeSpan.FromHours(1);
 
         private readonly ProviderDefinition _definition;
         private readonly SlskdIndexerSettings _settings;
@@ -179,6 +192,52 @@ namespace NzbDrone.Core.Indexers.Slskd
             return false;
         }
 
+        private bool IsIgnoredUser(string username)
+        {
+            if (_ignoredUsersSet.Contains(username))
+            {
+                return true;
+            }
+
+            var localUsername = GetLocalUsername();
+
+            return !localUsername.IsNullOrWhiteSpace() && localUsername.Equals(username, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private string GetLocalUsername()
+        {
+            var instance = _settings.BaseUrl ?? string.Empty;
+
+            if (LocalUsernames.TryGetValue(instance, out var cached) && DateTime.UtcNow - cached.ResolvedAt < LocalUsernameLifetime)
+            {
+                return cached.Username;
+            }
+
+            string username = null;
+
+            try
+            {
+                var request = new HttpRequestBuilder(_settings.BaseUrl)
+                    .Resource("api/v0/options")
+                    .Accept(HttpAccept.Json)
+                    .SetHeader("X-API-Key", _settings.ApiKey)
+                    .Build();
+
+                username = new HttpResponse<SlskdOptions>(_httpClient.Get(request)).Resource?.Soulseek?.Username;
+            }
+            catch (Exception ex)
+            {
+                // Only the automatic exclusion is lost, so the search is worth continuing without it
+                _logger.Debug(ex, "Could not read the slskd username, only the configured users are ignored");
+            }
+
+            // Stored even when it could not be resolved, so that an instance which does not answer is
+            // not asked again on every search
+            LocalUsernames[instance] = (username, DateTime.UtcNow);
+
+            return username;
+        }
+
         private void CancelSearch(string searchId)
         {
             try
@@ -236,7 +295,7 @@ namespace NzbDrone.Core.Indexers.Slskd
 
             foreach (var response in searchResult.Responses)
             {
-                if (_ignoredUsersSet.Contains(response.Username))
+                if (IsIgnoredUser(response.Username))
                 {
                     _logger.Debug($"Ignored response from user {response.Username}");
                     continue;
