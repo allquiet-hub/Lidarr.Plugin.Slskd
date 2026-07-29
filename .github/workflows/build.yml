@@ -18,9 +18,9 @@ env:
   # Disable sending usage data to Microsoft
   DOTNET_CLI_TELEMETRY_OPTOUT: true
   PLUGIN_NAME: Lidarr.Plugin.Slskd
-  PLUGIN_VERSION: 1.0.8.0
+  PLUGIN_VERSION: 1.0.9.0
   MINIMUM_LIDARR_VERSION: 3.0.0.4855
-  DOTNET_VERSION: 8.0.405
+  DOTNET_VERSION: 8.0.421
 
 jobs:
   build:
@@ -61,10 +61,46 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
+      # Full history so the notes can diff against the previous tag. The release tag itself does
+      # not exist yet, so the newest tag present is the previous release.
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
       - name: Download Artifact (net8.0)
         uses: actions/download-artifact@v4
         with:
           name: net8.0
+      - name: Compose release notes
+        id: notes
+        run: |
+          previous=$(git for-each-ref --sort=-v:refname --count=1 --format='%(refname:short)' 'refs/tags/v*')
+          {
+            echo "body<<RELEASE_NOTES_EOF"
+            echo "Adds Slskd (Soulseek) to Lidarr as both an indexer and a download client. Both have"
+            echo "to be added in Lidarr; see the [readme](https://github.com/${{ github.repository }}#readme) for setup."
+            echo
+            echo "Requires Lidarr \`nightly\` and slskd 0.26.0 or newer."
+            echo
+            # Parsed out of this body by Lidarr's PluginService to decide whether the release may
+            # be offered, so the wording of this line is load bearing.
+            echo "Minimum Lidarr Version: ${{ env.MINIMUM_LIDARR_VERSION }}"
+            echo
+            if [ -n "$previous" ]; then
+              echo "### Changes since $previous"
+              echo
+              git log --no-merges --pretty=format:'- %s (`%h`)' "$previous..HEAD"
+              echo
+              echo
+              echo "[Full changelog](https://github.com/${{ github.repository }}/compare/$previous...v${{ env.PLUGIN_VERSION }})"
+            else
+              echo "### Changes"
+              echo
+              git log --no-merges --pretty=format:'- %s (`%h`)'
+              echo
+            fi
+            echo "RELEASE_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
       - uses: meeDamian/github-release@2.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -74,10 +110,7 @@ jobs:
           # also degrades a sha back into the raw value once history moves past it.
           commitish: ${{ github.ref_name }}
           name: Slskd Plugin
-          body: >
-            Lidarr plugin to add Slskd (Soulseek) support
-
-            Minimum Lidarr Version: ${{ env.MINIMUM_LIDARR_VERSION }}
+          body: ${{ steps.notes.outputs.body }}
           draft: true
           prerelease: true
           files: >
