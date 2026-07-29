@@ -1,13 +1,18 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio 15
-VisualStudioVersion = 15.0.26124.0
+# Visual Studio Version 18
+VisualStudioVersion = 18.8.12023.21 stable
 MinimumVisualStudioVersion = 15.0.26124.0
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lidarr.Plugin.Slskd", "Lidarr.Plugin.Slskd\Lidarr.Plugin.Slskd.csproj", "{03AEA254-BEB0-4848-891E-3F8F9DDD3F56}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lidarr.Core", "Lidarr\src\NzbDrone.Core\Lidarr.Core.csproj", "{885ACAA7-A99E-4DEE-9994-A4C1458E77DE}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lidarr.Common", "Lidarr\src\NzbDrone.Common\Lidarr.Common.csproj", "{512C3A57-6A6E-40ED-8736-44784E9AAAA2}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "SolutionItems", "SolutionItems", "{FAC0D2D4-A805-4829-B9E5-C1AF4A3DFFD8}"
+	ProjectSection(SolutionItems) = preProject
+		..\README.md = ..\README.md
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -17,9 +22,6 @@ Global
 		Release|Any CPU = Release|Any CPU
 		Release|x64 = Release|x64
 		Release|x86 = Release|x86
-	EndGlobalSection
-	GlobalSection(SolutionProperties) = preSolution
-		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
 		{03AEA254-BEB0-4848-891E-3F8F9DDD3F56}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
@@ -58,5 +60,11 @@ Global
 		{512C3A57-6A6E-40ED-8736-44784E9AAAA2}.Release|x64.Build.0 = Release|Any CPU
 		{512C3A57-6A6E-40ED-8736-44784E9AAAA2}.Release|x86.ActiveCfg = Release|Any CPU
 		{512C3A57-6A6E-40ED-8736-44784E9AAAA2}.Release|x86.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {F557793D-43D3-4C0C-9BC3-55809A5782E1}
 	EndGlobalSection
 EndGlobal
