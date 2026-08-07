@@ -28,8 +28,6 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
         private const int BatchCacheLimit = 1000;
 
-        private static readonly TimeSpan CapabilityCacheDuration = TimeSpan.FromMinutes(5);
-
         private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(500);
 
         private static readonly TimeSpan RemovalDrainTimeout = TimeSpan.FromSeconds(15);
@@ -42,7 +40,6 @@ namespace NzbDrone.Core.Download.Clients.Slskd
         // identity; transient lookup failures are deliberately never cached, because answering with the
         // legacy identity while the batch still exists would change the download id mid-flight.
         private readonly ConcurrentDictionary<string, CachedBatch> _batchCache = new ();
-        private readonly ConcurrentDictionary<string, (DateTime Expiry, bool Supported)> _batchSupportCache = new ();
 
         public SlskdProxy(IHttpClient httpClient, Logger logger)
         {
@@ -75,33 +72,6 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             }
 
             return ExecuteGet<Application>(BuildRequest(settings, "/api/v0/application/"));
-        }
-
-        public bool SupportsBatches(SlskdSettings settings)
-        {
-            if (settings == null)
-            {
-                throw new ArgumentNullException(nameof(settings));
-            }
-
-            var key = HttpRequestBuilder.BuildBaseUrl(settings.UseSsl, settings.Host, settings.Port, settings.UrlBase);
-
-            if (_batchSupportCache.TryGetValue(key, out var cached) && cached.Expiry > DateTime.UtcNow)
-            {
-                return cached.Supported;
-            }
-
-            var supported = SlskdCapabilities.SupportsBatches(GetApplication(settings)?.Version);
-            _batchSupportCache[key] = (DateTime.UtcNow.Add(CapabilityCacheDuration), supported);
-
-            if (!supported)
-            {
-                _logger.Debug($"Slskd instance is older than {SlskdCapabilities.BatchesMinimumVersion}, " +
-                              "falling back to the legacy download endpoint. Upgrade slskd to let Lidarr " +
-                              "control the completed download location.");
-            }
-
-            return supported;
         }
 
         public List<DownloadClientItem> GetQueue(SlskdSettings settings)
@@ -149,39 +119,30 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                             continue;
                         }
 
-                        string key;
-                        OsPath outputPath;
-                        string titleBase = null;
+                        if (batchDownloadId == null)
+                        {
+                            // Enqueued outside of Lidarr, straight from slskd. Reporting it would put a
+                            // download in Lidarr's queue that it can neither map nor act on, next to the
+                            // ones it is actually managing.
+                            continue;
+                        }
+
+                        var outputPath = completedDownloadsPath + DestinationRoot + batchDownloadId;
+
+                        // The destination folder is named "Artist - Album" at enqueue time precisely so
+                        // the queue can hand Lidarr a parseable title: parsing is the only route by which
+                        // a tracked download gets mapped back to its album.
+                        var titleBase = GetBatchAlbumFolder(batch.Key);
+
                         int? expectedFiles = null;
-
-                        if (batchDownloadId != null)
+                        if (_batchCache.TryGetValue(batch.Key, out var cachedBatch))
                         {
-                            key = batchDownloadId;
-                            outputPath = completedDownloadsPath + DestinationRoot + batchDownloadId;
-
-                            // The destination folder is named "Artist - Album" at enqueue time precisely
-                            // so the queue can hand Lidarr a parseable title: parsing is the only route
-                            // by which a tracked download gets mapped back to its album.
-                            titleBase = GetBatchAlbumFolder(batch.Key);
-
-                            if (_batchCache.TryGetValue(batch.Key, out var cachedBatch))
-                            {
-                                expectedFiles = cachedBatch?.ExpectedFiles;
-                            }
-                        }
-                        else
-                        {
-                            // Legacy layout: slskd decides where the files land, so the album folder is
-                            // reconstructed from the remote path. Disc sub-folders (CD1, CD2, ...) are
-                            // merged under their parent so the id matches the one computed during search.
-                            var canonicalDir = GetCanonicalDirectory(directory.Directory);
-                            key = ReleaseIdentifier.Compute($"{queue.Username}{canonicalDir}");
-                            outputPath = completedDownloadsPath + files[0].FirstParentFolder;
+                            expectedFiles = cachedBatch?.ExpectedFiles;
                         }
 
-                        if (!groups.TryGetValue(key, out var group))
+                        if (!groups.TryGetValue(batchDownloadId, out var group))
                         {
-                            groups[key] = group = new QueueGroup(queue.Username, outputPath, titleBase);
+                            groups[batchDownloadId] = group = new QueueGroup(queue.Username, outputPath, titleBase);
                         }
 
                         group.Files.AddRange(files);
@@ -291,15 +252,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 ? FileProcessingUtils.GetParentPath(downloadPath)
                 : downloadPath;
 
-            if (SupportsBatches(settings))
-            {
-                EnqueueBatches(searchId, username, albumPath, audioFiles, identifier, albumTitle, settings);
-            }
-            else
-            {
-                var downloadRequests = audioFiles.Select(file => new DownloadRequest { Filename = file.FileName, Size = file.Size }).ToList();
-                Execute(BuildRequest(settings, $"/api/v0/transfers/downloads/{username}/").Post(), downloadRequests.ToJson());
-            }
+            EnqueueBatches(searchId, username, albumPath, audioFiles, identifier, albumTitle, settings);
 
             return identifier;
         }
@@ -339,14 +292,6 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                         matchingFiles.AddRange(batchFiles.Select(file => (queue.Username, file)));
                         matchingDirectories.Add(directory);
                         isBatched = true;
-                        continue;
-                    }
-
-                    var canonicalDir = GetCanonicalDirectory(directory.Directory);
-                    if (ReleaseIdentifier.Compute($"{queue.Username}{canonicalDir}") == downloadId)
-                    {
-                        matchingFiles.AddRange(directory.Files.Select(file => (queue.Username, file)));
-                        matchingDirectories.Add(directory);
                     }
                 }
             }
@@ -562,9 +507,9 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
         /// <summary>
         /// Resolves the download ID of a Lidarr-owned batch. A null ID with a true return means the
-        /// files positively do not belong to a Lidarr batch (never batched, or slskd does not know the
-        /// batch) and the legacy path reconstruction applies. False means the lookup failed transiently
-        /// and no identity can be assigned right now: nothing is cached, so the next poll retries.
+        /// files positively are not one of ours: never batched, or a batch slskd does not know. False
+        /// means the lookup failed transiently and no identity can be assigned right now: nothing is
+        /// cached, so the next poll retries.
         /// </summary>
         private bool TryResolveDownloadId(string batchId, SlskdSettings settings, out string downloadId)
         {
@@ -673,14 +618,6 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
             var segments = cached?.Options?.Destination?.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
             return segments?.Length >= 3 ? segments[2] : null;
-        }
-
-        private static string GetCanonicalDirectory(string directory)
-        {
-            var dirName = directory?.Split('\\').LastOrDefault() ?? string.Empty;
-            return FileProcessingUtils.IsDiscFolder(dirName)
-                ? FileProcessingUtils.GetParentPath(directory)
-                : directory;
         }
 
         private void DeleteDownloadDirectory(string directory, SlskdSettings settings)

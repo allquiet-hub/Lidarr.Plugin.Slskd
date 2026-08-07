@@ -127,6 +127,12 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 };
             }
 
+            var version = TestVersion();
+            if (version != null)
+            {
+                return version;
+            }
+
             if (Settings.RepairConfiguration)
             {
                 var repairResult = RepairConfiguration(config);
@@ -136,7 +142,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 }
             }
 
-            return TestBatchSupport();
+            return null;
         }
 
         /// <summary>
@@ -272,21 +278,25 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             return new NzbDroneValidationFailure(string.Empty, message) { IsWarning = true };
         }
 
-        private ValidationFailure TestBatchSupport()
+        /// <summary>
+        /// Refuses an instance older than the one the plugin is built against. Everything that ties a
+        /// transfer back to the grab that started it rests on the download id living in the batch
+        /// destination, which older versions cannot be told to use.
+        /// </summary>
+        private ValidationFailure TestVersion()
         {
-            if (!_proxy.SupportsBatches(Settings))
+            if (SlskdCapabilities.IsSupported(_proxy.GetApplication(Settings)?.Version))
             {
-                return new NzbDroneValidationFailure(string.Empty, $"Slskd {SlskdCapabilities.BatchesMinimumVersion} or newer is recommended")
-                {
-                    IsWarning = true,
-                    InfoLink = HttpRequestBuilder.BuildBaseUrl(Settings.UseSsl, Settings.Host, Settings.Port, Settings.UrlBase),
-                    DetailedDescription = $"This slskd instance is older than {SlskdCapabilities.BatchesMinimumVersion}, so Lidarr cannot pin the completed download location " +
-                                          "and has to infer it from the remote folder name. Downloads will not be imported if 'transfers.download.destination.subdirectory' " +
-                                          "is customised in slskd. Upgrading slskd also enables automatic retries of failed transfers.",
-                };
+                return null;
             }
 
-            return null;
+            return new NzbDroneValidationFailure(string.Empty, $"Slskd {SlskdCapabilities.MinimumVersion} or newer is required")
+            {
+                InfoLink = HttpRequestBuilder.BuildBaseUrl(Settings.UseSsl, Settings.Host, Settings.Port, Settings.UrlBase),
+                DetailedDescription = $"This slskd instance is older than {SlskdCapabilities.MinimumVersion}. Lidarr cannot track downloads on it, " +
+                                      "because the completed download location cannot be pinned and a transfer can no longer be matched to what was grabbed. " +
+                                      "Upgrade slskd and test again.",
+            };
         }
     }
 }

@@ -11,8 +11,6 @@ public interface ISlskdProxy
 
     Application GetApplication(SlskdSettings settings);
 
-    bool SupportsBatches(SlskdSettings settings);
-
     List<DownloadClientItem> GetQueue(SlskdSettings settings);
 
     string Download(string searchId, string username, string downloadPath, string identifier, string albumTitle, SlskdSettings settings);
