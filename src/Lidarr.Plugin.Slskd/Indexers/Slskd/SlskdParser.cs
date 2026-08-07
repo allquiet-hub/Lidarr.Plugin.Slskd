@@ -172,13 +172,13 @@ namespace NzbDrone.Core.Indexers.Slskd
                 return title;
             }
 
-            // An artist whose name contains any of '* < > |' (e.g. DECO*27) can never satisfy the
-            // criteria parser: Lidarr deletes those characters from the title before matching, but
-            // escapes them as literals in the pattern built from the artist's name, so no title can
-            // contain what the pattern demands. The escape hatch is the standard parser, which needs
-            // the dash-separated 'Artist - Album (Year)' shape and maps the halves through normalised
-            // lookups that forgive the missing characters.
-            if (artistName.IndexOfAny(CriteriaUnmatchableChars) >= 0 && albumYear > 0)
+            // An artist or album containing any of '* < > |' (DECO*27, while(1<2)) can never satisfy
+            // the criteria parser: Lidarr deletes those characters from the title before matching, but
+            // escapes them as literals in the pattern built from the library's own names, so no title
+            // can contain what the pattern demands. The escape hatch is the standard parser, which
+            // needs the dash-separated 'Artist - Album (Year)' shape and maps the halves through
+            // normalised lookups that drop those characters from both sides.
+            if ((artistName.IndexOfAny(CriteriaUnmatchableChars) >= 0 || albumTitle.IndexOfAny(CriteriaUnmatchableChars) >= 0) && albumYear > 0)
             {
                 // Brackets are flattened out of the album because the standard parser stops the album
                 // capture at the first parenthesis: '愛迷エレジー (Reloaded)' parses as just '愛迷エレジー'
