@@ -25,9 +25,23 @@ namespace NzbDrone.Core.Indexers.Slskd
 
         private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(750);
 
+        private static readonly TimeSpan ResponseSettleBudget = TimeSpan.FromSeconds(8);
+
+        /// <summary>
+        /// How long a search that looks empty is polled before it is believed, when nothing about it
+        /// says otherwise. A search whose results have not been written yet is indistinguishable from
+        /// one nobody answered, and queries that genuinely find nothing are common enough that they
+        /// cannot be made to wait out the full settle budget. The window has to clear the gap between
+        /// a search completing and its responses becoming readable, which grows with the size of the
+        /// result: a search returning some ten thousand files takes a couple of seconds.
+        /// </summary>
+        private static readonly TimeSpan EmptyConfirmationBudget = TimeSpan.FromSeconds(4);
+
+        private static readonly TimeSpan ResponseSettleInterval = TimeSpan.FromMilliseconds(600);
+
         /// <summary>
         /// Ceiling on a single search, not a tuning knob: what governs how long a search runs is the
-        /// inactivity window sent to slskd, and observed searches complete in under ten seconds. This
+        /// inactivity window sent to slskd, and searches ordinarily complete within seconds. This
         /// only stops a search whose results never stop trickling in from stalling the whole chain.
         /// </summary>
         private static readonly TimeSpan SearchBudget = TimeSpan.FromSeconds(30);
@@ -43,6 +57,14 @@ namespace NzbDrone.Core.Indexers.Slskd
             new ConcurrentDictionary<string, (string Username, DateTime ResolvedAt)>();
 
         private static readonly TimeSpan LocalUsernameLifetime = TimeSpan.FromHours(1);
+
+        /// <summary>
+        /// Characters Lidarr's SimpleTitleRegex deletes from a title before the criteria regex runs,
+        /// while the pattern built from the artist's name keeps them as escaped literals.
+        /// </summary>
+        private static readonly char[] CriteriaUnmatchableChars = { '*', '<', '>', '|' };
+
+        private static readonly Regex WhitespaceRegex = new (@"\s+", RegexOptions.Compiled);
 
         private readonly ProviderDefinition _definition;
         private readonly SlskdIndexerSettings _settings;
@@ -83,19 +105,33 @@ namespace NzbDrone.Core.Indexers.Slskd
             }
 
             // Re-fetch with responses: slskd withholds the response bodies until the search completes
-            searchResult = GetSearchResult(searchResult.Id, includeResponses: true);
+            searchResult = FetchSettledSearchResult(searchResult);
 
             return ProcessSearchResults(
                 searchResult,
                 GetExpectedTrackCount(indexerResponse.HttpRequest),
                 DecodeHeader(indexerResponse.HttpRequest, SlskdRequestGenerator.ArtistNameHeader),
-                DecodeHeader(indexerResponse.HttpRequest, SlskdRequestGenerator.AlbumTitleHeader));
+                DecodeHeader(indexerResponse.HttpRequest, SlskdRequestGenerator.AlbumTitleHeader),
+                GetAlbumYear(indexerResponse.HttpRequest),
+                GetHeaderInt(indexerResponse.HttpRequest, SlskdRequestGenerator.MaximumTrackCountHeader));
         }
 
         private static int GetExpectedTrackCount(HttpRequest request)
         {
             var header = request?.Headers?[SlskdRequestGenerator.ExpectedTrackCountHeader];
             return int.TryParse(header, NumberStyles.Integer, CultureInfo.InvariantCulture, out var count) ? count : 0;
+        }
+
+        private static int GetAlbumYear(HttpRequest request)
+        {
+            var header = request?.Headers?[SlskdRequestGenerator.AlbumYearHeader];
+            return int.TryParse(header, NumberStyles.Integer, CultureInfo.InvariantCulture, out var year) ? year : 0;
+        }
+
+        private static int GetHeaderInt(HttpRequest request, string name)
+        {
+            var header = request?.Headers?[name];
+            return int.TryParse(header, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value : 0;
         }
 
         private static string DecodeHeader(HttpRequest request, string name)
@@ -129,11 +165,27 @@ namespace NzbDrone.Core.Indexers.Slskd
         /// it — the artist in front, the album in brackets at the end — which makes the match hold by
         /// construction. Titles that already satisfy it are left alone.
         /// </summary>
-        private static string EnsureMappableTitle(string title, string artistName, string albumTitle)
+        private static string EnsureMappableTitle(string title, string artistName, string albumTitle, int albumYear)
         {
             if (artistName.IsNullOrWhiteSpace() || albumTitle.IsNullOrWhiteSpace() || title.IsNullOrWhiteSpace())
             {
                 return title;
+            }
+
+            // An artist whose name contains any of '* < > |' (e.g. DECO*27) can never satisfy the
+            // criteria parser: Lidarr deletes those characters from the title before matching, but
+            // escapes them as literals in the pattern built from the artist's name, so no title can
+            // contain what the pattern demands. The escape hatch is the standard parser, which needs
+            // the dash-separated 'Artist - Album (Year)' shape and maps the halves through normalised
+            // lookups that forgive the missing characters.
+            if (artistName.IndexOfAny(CriteriaUnmatchableChars) >= 0 && albumYear > 0)
+            {
+                // Brackets are flattened out of the album because the standard parser stops the album
+                // capture at the first parenthesis: '愛迷エレジー (Reloaded)' parses as just '愛迷エレジー'
+                // and maps to the base album. Without them the full words survive the capture, and the
+                // album lookup normalises brackets away anyway when comparing titles.
+                var flatAlbum = WhitespaceRegex.Replace(albumTitle.Replace('(', ' ').Replace(')', ' ').Replace('[', ' ').Replace(']', ' '), " ").Trim();
+                return $"{artistName} - {flatAlbum} ({albumYear}) {title}";
             }
 
             // Mirrors Parser.ParseAlbumTitleWithSearchCriteria: accents are stripped from the names,
@@ -158,10 +210,144 @@ namespace NzbDrone.Core.Indexers.Slskd
 
             if (!criteriaRegex.IsMatch(annotated))
             {
+                // Appending the album makes ANY folder map to the album being searched, including one
+                // whose name plainly says it is a different record — which then dodges the wrong-album
+                // rejection precisely because without the annotation it would not have parsed at all.
+                // The annotation is therefore earned, not free: the title must already resemble the
+                // album, with punctuation forgiven for normal titles and taken literally for
+                // degenerate ones a couple of characters long, where the forgiving comparison would
+                // match practically anything.
+                if (!TitleResemblesAlbum(annotated, albumTitle))
+                {
+                    return title;
+                }
+
                 annotated = $"{annotated} [{album}]";
             }
 
             return criteriaRegex.IsMatch(annotated) ? annotated : title;
+        }
+
+        private static bool TitleResemblesAlbum(string title, string albumTitle)
+        {
+            var normalizedAlbum = Normalize(albumTitle);
+
+            if (normalizedAlbum.Length >= 3)
+            {
+                return Normalize(title).Contains(normalizedAlbum, StringComparison.Ordinal);
+            }
+
+            var literal = albumTitle.Trim();
+            return literal.Length > 0 && title.Contains(literal, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string Normalize(string value)
+        {
+            if (value.IsNullOrWhiteSpace())
+            {
+                return string.Empty;
+            }
+
+            var builder = new StringBuilder(value.Length);
+            foreach (var character in value.RemoveAccent())
+            {
+                if (char.IsLetterOrDigit(character))
+                {
+                    builder.Append(char.ToLowerInvariant(character));
+                }
+            }
+
+            return builder.ToString();
+        }
+
+        /// <summary>
+        /// Fetches the responses of a completed search, waiting out slskd's write-behind.
+        ///
+        /// slskd marks a search complete before it has flushed the responses to its store: fetched in
+        /// the same instant, the payload comes back empty or partial with no error, complete only
+        /// moments later. The payload is therefore refetched until it stops growing, and a search is
+        /// believed to be empty only once it has stayed empty for the confirmation window.
+        /// </summary>
+        private SearchResult FetchSettledSearchResult(SearchResult completed)
+        {
+            var best = TryGetSearchResult(completed.Id);
+            var bestCount = best?.Responses?.Count ?? 0;
+
+            // The response count is written behind the search itself, so a search that drew a thousand
+            // peers can still report none at the moment it completes. Whatever any reading says the
+            // search holds is therefore a floor, never a ceiling, and never a reason to stop early.
+            var expected = Math.Max(completed.ResponseCount, best?.ResponseCount ?? 0);
+            var hasResults = FoundSomething(completed) || FoundSomething(best);
+
+            var stopwatch = Stopwatch.StartNew();
+
+            while (bestCount < expected || (bestCount == 0 && (hasResults || stopwatch.Elapsed < EmptyConfirmationBudget)))
+            {
+                if (stopwatch.Elapsed >= ResponseSettleBudget)
+                {
+                    break;
+                }
+
+                Thread.Sleep(ResponseSettleInterval);
+
+                var refetched = TryGetSearchResult(completed.Id);
+                var count = refetched?.Responses?.Count ?? 0;
+                expected = Math.Max(expected, refetched?.ResponseCount ?? 0);
+                hasResults |= FoundSomething(refetched);
+
+                if (count > bestCount)
+                {
+                    best = refetched;
+                    bestCount = count;
+                    continue;
+                }
+
+                // A payload that has stopped growing has settled. An empty one has not: it means the
+                // responses are still being written, so keep polling until the budget runs out.
+                if (bestCount > 0)
+                {
+                    break;
+                }
+            }
+
+            return best ?? completed;
+        }
+
+        /// <summary>
+        /// Whether a search is known to have found something, however little its counters admit to at
+        /// the moment they are read. A search that ended because it reached a limit necessarily found
+        /// enough to reach it, and that reason is decided when the search stops rather than when its
+        /// results are written down, which makes it the one signal the write-behind cannot flatten.
+        /// </summary>
+        private static bool FoundSomething(SearchResult search)
+        {
+            if (search == null)
+            {
+                return false;
+            }
+
+            return search.ResponseCount > 0 ||
+                   search.FileCount > 0 ||
+                   search.State?.Contains("LimitReached", StringComparison.OrdinalIgnoreCase) == true;
+        }
+
+        /// <summary>
+        /// Fetches a search with its responses, treating a failed fetch as "nothing new this time"
+        /// rather than an error. The payload of a search that drew a thousand peers is large enough to
+        /// fail on its own under load, and letting that failure escape would discard every release of
+        /// the whole album, including the ones other queries already found.
+        /// </summary>
+        private SearchResult TryGetSearchResult(string searchId)
+        {
+            try
+            {
+                return GetSearchResult(searchId, includeResponses: true);
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug(ex, $"Could not fetch the responses of search {searchId}, retrying while the budget lasts");
+                return null;
+            }
         }
 
         private SearchResult GetInitialSearchResult(IndexerResponse indexerResponse)
@@ -283,7 +469,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             }
         }
 
-        private IList<ReleaseInfo> ProcessSearchResults(SearchResult searchResult, int expectedTrackCount, string artistName, string albumTitle)
+        private IList<ReleaseInfo> ProcessSearchResults(SearchResult searchResult, int expectedTrackCount, string artistName, string albumTitle, int albumYear, int maximumTrackCount)
         {
             var releases = new List<ReleaseInfo>();
 
@@ -301,13 +487,13 @@ namespace NzbDrone.Core.Indexers.Slskd
                     continue;
                 }
 
-                ProcessUserResponse(response, searchResult.Id, expectedTrackCount, artistName, albumTitle, releases);
+                ProcessUserResponse(response, searchResult.Id, expectedTrackCount, artistName, albumTitle, albumYear, maximumTrackCount, releases);
             }
 
             return releases.OrderByDescending(r => r.Size).ToList();
         }
 
-        private void ProcessUserResponse(SearchResponse response, string searchId, int expectedTrackCount, string artistName, string albumTitle, List<ReleaseInfo> releases)
+        private void ProcessUserResponse(SearchResponse response, string searchId, int expectedTrackCount, string artistName, string albumTitle, int albumYear, int maximumTrackCount, List<ReleaseInfo> releases)
         {
             var rawGroups = response.Files
                 .Cast<SlskdFile>()
@@ -323,7 +509,7 @@ namespace NzbDrone.Core.Indexers.Slskd
                     continue;
                 }
 
-                var releaseInfo = CreateReleaseInfo(audioFiles, response, searchId, groupKey, expectedTrackCount, artistName, albumTitle);
+                var releaseInfo = CreateReleaseInfo(audioFiles, response, searchId, groupKey, expectedTrackCount, artistName, albumTitle, albumYear, maximumTrackCount);
                 if (releaseInfo != null)
                 {
                     releases.Add(releaseInfo);
@@ -367,22 +553,24 @@ namespace NzbDrone.Core.Indexers.Slskd
             return false;
         }
 
-        private ReleaseInfo CreateReleaseInfo(List<SlskdFile> audioFiles, SearchResponse response, string searchId, string groupKey, int expectedTrackCount, string artistName, string albumTitle)
+        private ReleaseInfo CreateReleaseInfo(List<SlskdFile> audioFiles, SearchResponse response, string searchId, string groupKey, int expectedTrackCount, string artistName, string albumTitle, int albumYear, int maximumTrackCount)
         {
             var isSingleFile = audioFiles.Count == 1;
             var downloadPath = isSingleFile ? audioFiles[0].FileName : groupKey;
-            var identifier = Crc32Hasher.Crc32Base64($"{response.Username}{groupKey}");
+            var identifier = ReleaseIdentifier.Compute($"{response.Username}{groupKey}");
 
             var totalSize = audioFiles.Sum(file => file.Size);
             var releaseInfo = new SlskdReleaseInfo
             {
                 AudioFileCount = audioFiles.Count,
                 ExpectedTrackCount = expectedTrackCount,
+                MaximumTrackCount = maximumTrackCount,
                 Guid = identifier,
                 Title = EnsureMappableTitle(
                     FileProcessingUtils.BuildTitle(audioFiles) + DescribePeer(response),
                     artistName,
-                    albumTitle),
+                    albumTitle,
+                    albumYear),
                 DownloadUrl = downloadPath,
                 InfoUrl = $"{_settings.BaseUrl}searches/{searchId}",
                 Size = totalSize,
