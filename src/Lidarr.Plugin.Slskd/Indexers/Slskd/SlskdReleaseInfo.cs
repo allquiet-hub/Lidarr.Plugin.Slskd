@@ -10,14 +10,15 @@ namespace NzbDrone.Core.Indexers.Slskd
     /// once the whole download has been transferred. SlskdCompleteReleaseSpecification uses these counts
     /// to reject it up front instead.
     ///
-    /// ReleaseResource.ToModel rebuilds a plain ReleaseInfo for non-torrent protocols, so this data is
-    /// lost when a release is grabbed by hand from interactive search. That is intentional: automatic
-    /// grabs are blocked while manual ones remain possible.
+    /// A grab from interactive search still carries these counts, since it resolves back to the cached
+    /// RemoteAlbum rather than to the resource the client posted, but it goes straight to the download
+    /// without the decision engine running again. The rejection therefore stops the automatic path and
+    /// leaves the same release grabbable by hand, which is the intent.
     /// </summary>
     public class SlskdReleaseInfo : ReleaseInfo
     {
         /// <summary>
-        /// Number of valid audio files in the release folder, disc sub-folders included.
+        /// Audio files in the folder, disc sub-folders included.
         /// </summary>
         public int AudioFileCount { get; set; }
 
@@ -25,5 +26,10 @@ namespace NzbDrone.Core.Indexers.Slskd
         /// Tracks the album is expected to have, or 0 when unknown or when the user allows incomplete releases.
         /// </summary>
         public int ExpectedTrackCount { get; set; }
+
+        /// <summary>
+        /// The largest track count among the releases the import may map against, or 0 when unknown.
+        /// </summary>
+        public int MaximumTrackCount { get; set; }
     }
 }
