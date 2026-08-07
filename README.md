@@ -119,10 +119,13 @@ legitimate configuration.
   relying on Lidarr running as a user that bypasses the check, and will break the day it doesn't.
 - `remote_file_management` has to be enabled for the plugin to delete a download after Lidarr has
   imported it. With it off, imports still work and completed folders simply accumulate in slskd.
-- `transfers.download.slots` is generous by default — slskd's example config ships `500`, and it is a
-  hard cap on transfers running at once. Lidarr imports an album only once every file in it has
-  completed, so the fewer downloads run in parallel, the sooner any one of them finishes. Whether
-  that is worth tuning depends on your line; slot changes need an slskd restart, speed limits do not.
+- `transfers.download.slots` caps how many transfers run at once, and slskd's example config ships
+  `500`. Leave it generous. A transfer is paced by the remote peer's upload slot rather than by your
+  connection — a few hundred KB/s each is ordinary — and at any moment most of a queue is not
+  transferring at all but waiting its turn in somebody else's. Throughput therefore comes from
+  breadth, from many slow peers at once, and lowering the cap only lowers it. Tighten it only if
+  downloads are genuinely saturating your line or your disk. Slot changes need an slskd restart,
+  speed limits do not.
 
 The first two are raised as Lidarr health warnings, and the download client's **Fix slskd Config on
 Test** option can correct them for you.
