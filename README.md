@@ -141,13 +141,13 @@ Test** option can correct them for you.
   rather than from whatever the sharer called their folder. What forcing does *not* do is exempt the
   files from the import's own checks — a folder whose tags describe a different edition is refused
   either way.
-- **An album whose title contains `*`, `<`, `>` or `|` is never matched automatically.** Lidarr
-  strips those characters from a release title before comparing it, but keeps them as literals in
-  the pattern built from the library's album name, so no title can contain what the pattern demands.
-  deadmau5's `while(1<2)` returns over nine hundred releases and approves none of them. The plugin
-  works around the same problem for *artist* names, which have a second route through the standard
-  parser, but an album title has no equivalent. Grab one of the results by hand; the import then
-  proceeds normally, for the reason in the previous entry.
+- **An artist or album containing `*`, `<`, `>` or `|` needs the release year to be matched.** Lidarr
+  strips those characters from a release title before comparing it, but keeps them as literals in the
+  pattern built from the library's own names, so nothing can satisfy that comparison — `DECO*27` and
+  deadmau5's `while(1<2)` are both in this class. The plugin routes them around it by rewriting the
+  title into the `Artist - Album (Year)` shape the standard parser accepts, which resolves through
+  lookups that drop the characters from both sides. That route needs the year, so an album with no
+  release date in MusicBrainz stays unmatchable and has to be grabbed by hand.
 - **Albums whose MusicBrainz duration is 0 are rejected automatically**, with `Album duration is 0`.
   Lidarr bounds an acceptable size by the runtime, so with no runtime it has nothing to check against
   and refuses permanently. The runtime is summed over the album's *monitored* releases, or over all of
