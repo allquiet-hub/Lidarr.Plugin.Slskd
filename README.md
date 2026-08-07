@@ -11,7 +11,7 @@ other does nothing.
 | | Version | Why |
 |---|---|---|
 | Lidarr | `nightly` | Plugin support is not in the stable channel. Use `lscr.io/linuxserver/lidarr:nightly`. |
-| slskd | 0.26.0 or newer | Older versions work, but see [slskd version](#slskd-version) below. |
+| slskd | 0.26.0 or newer | Required. Both the indexer and the download client refuse to start on anything older — see [slskd version](#slskd-version) below. |
 
 A working slskd instance with a Soulseek account already configured, and an slskd **API key** with
 the `readwrite` role.
@@ -37,8 +37,7 @@ the `readwrite` role.
 | API Key | An slskd API key with the `readwrite` role |
 | Fix slskd Config on Test | Off by default. When Test finds slskd settings that break the integration, rewrites slskd's config file — the edit is validated by slskd itself before being saved, and everything else in the file is left untouched — and restarts slskd if the change needs it. The restart is skipped while downloads are active; Test then says to restart manually or try again when the queue is idle. Needs an `administrator` API key and `remote_configuration: true` in slskd. |
 
-**Test** reports a warning rather than an error if slskd is older than 0.26.0 — the plugin still
-works, but read [slskd version](#slskd-version).
+**Test** fails if slskd is older than 0.26.0 and tells you to upgrade.
 
 ### 2. Indexer
 
@@ -52,7 +51,6 @@ works, but read [slskd version](#slskd-version).
 | Early Download Limit | empty | Days before the release date that downloads are allowed |
 | Minimum Upload Speed | `0` | Hides peers slower than this, in MB/s. Decimals allowed (`0.2`). `0` shows everyone. |
 | Maximum Queue Length | `0` | Hides peers with more uploads already queued. `0` shows everyone. |
-| Response Limit | `50` | Ends a search once this many users have responded. `0` waits for the whole search. |
 | Allow Incomplete Releases | off | Offers folders with fewer audio files than the album has tracks |
 
 The peer filters default to off on purpose, and the reason is structural rather than a matter of
@@ -63,30 +61,71 @@ was filtered out has nothing left to force. Raise these only if you are drowning
 
 ## How it works
 
-A search asks slskd for the artist and album, then groups the responses by remote folder — one
-folder becomes one release. Grabbing a release enqueues an slskd **batch** whose destination is
-pinned to `lidarr/<download id>/<Artist> - <Album>/`, which is how the plugin recognises the
-download later and how Lidarr identifies what it imported. Once Lidarr has imported the album and
-removed it from the queue, the plugin deletes that folder from slskd.
+A search asks slskd for the artist and album as they are written in your library, whitespace
+collapsed and nothing else touched. That is deliberate: a query travels the network as a list of
+terms split on spaces, each of which has to appear somewhere in a file's path, and clients differ
+only in whether punctuation separates tokens or is matched literally. Stripping it therefore only
+ever costs folders — the ones that spell a title the way the artist does.
+
+The responses are grouped by remote folder: one folder becomes one release.
+
+If that finds nothing, the search widens in steps, and only as far as it has to — each step runs
+only when the one before it came back empty:
+
+1. artist and album, plus a bracket-stripped variant for a title like `Album (Remixes)`, since
+   either form alone finds only half the copies
+2. the album title on its own, which is the only way to find a record whose artist the Soulseek
+   server refuses to answer for. Titles of a single word are excluded: a common one returns
+   thousands of folders with nothing to do with the record
+3. one artist alias, if MusicBrainz lists a usable one
+
+An album therefore costs between one and four searches. That is worth knowing, because the Soulseek
+server disconnects an account that searches too heavily and refuses it for a while afterwards —
+neither the threshold nor the duration is published anywhere, and the plugin cannot see it coming.
+Lidarr's own scheduled searches are spread thin enough not to be a concern; running a search over a
+long list of missing albums by hand, repeatedly, is what gets you there.
+
+Grabbing a release enqueues an slskd **batch** whose destination is pinned to
+`lidarr/<download id>/<Artist> - <Album>/`. That path is set by the plugin, not by your slskd
+configuration, and the download id in it is what ties the transfer back to the grab — including
+after a restart of either side. Once Lidarr has imported the album and removed it from the queue,
+the plugin deletes that folder from slskd.
+
+Transfers you start by hand in slskd are not reported to Lidarr, for the same reason a SABnzbd item
+outside Lidarr's category is not: without a grab behind it, Lidarr can neither map it to an album
+nor import it, so it would only sit in the queue. They stay visible in slskd's own interface.
 
 ## slskd version
 
-From 0.26.0 the plugin pins each download's destination through the batch API, so completed files
-land where the plugin expects **regardless** of the `transfers.download.destination.subdirectory`
-expression in your slskd config. On older versions the destination has to be inferred from the
-remote folder name instead, and imports break if that expression has been customised. 0.26.0 also
-enables automatic retries of failed transfers.
+0.26.0 introduced the batch API, which lets the plugin pin each download's destination. That
+destination is where the download id is written, and reading it back is the only thing that ties a
+transfer in slskd to the grab recorded in Lidarr — across restarts of either. It also means completed
+files land where the plugin expects **regardless** of the `transfers.download.destination.subdirectory`
+expression in your slskd config, and it is what enables automatic retries of failed transfers.
 
-Two slskd settings are worth checking, since neither is obvious:
+Older versions have no equivalent: the destination would have to be guessed from the remote folder
+name, which breaks as soon as that expression is customised and leaves nothing to read a download id
+back from. Rather than ship a second, less tested path for them, the plugin refuses to run and says
+so.
+
+## slskd settings worth checking
+
+None of these is obvious, and slskd reports no problem with any of them: on its side they are all
+legitimate configuration.
 
 - `transfers.download.destination.permissions.mode` is applied to **directories** as well as files,
   per slskd's own documentation. A mode without the execute bit, such as `666`, leaves album folders
   that cannot be traversed, so prefer `777`. If imports work today on a mode like that, they are
   relying on Lidarr running as a user that bypasses the check, and will break the day it doesn't.
+- `remote_file_management` has to be enabled for the plugin to delete a download after Lidarr has
+  imported it. With it off, imports still work and completed folders simply accumulate in slskd.
 - `transfers.download.slots` is generous by default — slskd's example config ships `500`, and it is a
   hard cap on transfers running at once. Lidarr imports an album only once every file in it has
   completed, so the fewer downloads run in parallel, the sooner any one of them finishes. Whether
   that is worth tuning depends on your line; slot changes need an slskd restart, speed limits do not.
+
+The first two are raised as Lidarr health warnings, and the download client's **Fix slskd Config on
+Test** option can correct them for you.
 
 ## Known issues
 
@@ -96,7 +135,19 @@ Two slskd settings are worth checking, since neither is obvious:
   free-form names that no parser can turn into a release. The plugin rewrites titles so the match
   holds where the folder name alone would not carry it, but some releases still reach Lidarr without
   a recognised artist. They stay grabbable from interactive search — that is deliberate, since a
-  visible result you can force beats a result that was filtered away.
+  visible result you can force beats a result that was filtered away. Forcing one is not a
+  half-measure: the grab records the artist and album against the download id, and the plugin names
+  the download folder `<Artist> - <Album>`, so the import takes the album's identity from those two
+  rather than from whatever the sharer called their folder. What forcing does *not* do is exempt the
+  files from the import's own checks — a folder whose tags describe a different edition is refused
+  either way.
+- **An album whose title contains `*`, `<`, `>` or `|` is never matched automatically.** Lidarr
+  strips those characters from a release title before comparing it, but keeps them as literals in
+  the pattern built from the library's album name, so no title can contain what the pattern demands.
+  deadmau5's `while(1<2)` returns over nine hundred releases and approves none of them. The plugin
+  works around the same problem for *artist* names, which have a second route through the standard
+  parser, but an album title has no equivalent. Grab one of the results by hand; the import then
+  proceeds normally, for the reason in the previous entry.
 - **Albums whose MusicBrainz duration is 0 are rejected automatically**, with `Album duration is 0`.
   Lidarr bounds an acceptable size by the runtime, so with no runtime it has nothing to check against
   and refuses permanently. The runtime is summed over the album's *monitored* releases, or over all of

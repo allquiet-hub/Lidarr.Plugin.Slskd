@@ -10,6 +10,7 @@ using NzbDrone.Core.Configuration;
 using NzbDrone.Core.Download.Clients.Slskd;
 using NzbDrone.Core.Parser;
 using NzbDrone.Core.Parser.Model;
+using NzbDrone.Plugin.Slskd.Helpers;
 using NzbDrone.Plugin.Slskd.Models;
 
 namespace NzbDrone.Core.Indexers.Slskd
@@ -112,17 +113,17 @@ namespace NzbDrone.Core.Indexers.Slskd
         /// </summary>
         protected override async Task<ValidationFailure> TestConnection()
         {
-            ApplicationServer server;
+            Application application;
 
             try
             {
                 var request = new HttpRequestBuilder(Settings.BaseUrl)
-                    .Resource("api/v0/server")
+                    .Resource("api/v0/application")
                     .Accept(HttpAccept.Json)
                     .SetHeader("X-API-Key", Settings.ApiKey)
                     .Build();
 
-                server = new HttpResponse<ApplicationServer>(await _httpClient.ExecuteAsync(request)).Resource;
+                application = new HttpResponse<Application>(await _httpClient.ExecuteAsync(request)).Resource;
             }
             catch (HttpException ex) when (ex.Response?.StatusCode == HttpStatusCode.Unauthorized)
             {
@@ -134,14 +135,20 @@ namespace NzbDrone.Core.Indexers.Slskd
                 return new ValidationFailure("BaseUrl", "Could not connect to slskd");
             }
 
-            if (server == null)
+            if (application?.Server == null)
             {
                 return new ValidationFailure(string.Empty, "slskd did not report its connection state");
             }
 
-            if (!server.IsLoggedIn)
+            if (!SlskdCapabilities.IsSupported(application.Version))
             {
-                return new ValidationFailure(string.Empty, $"slskd is not logged in to the Soulseek network, it reports '{server.State}'");
+                return new ValidationFailure(string.Empty,
+                    $"Slskd {SlskdCapabilities.MinimumVersion} or newer is required, this instance reports '{application.Version?.Current}'. Upgrade slskd and test again.");
+            }
+
+            if (!application.Server.IsLoggedIn)
+            {
+                return new ValidationFailure(string.Empty, $"slskd is not logged in to the Soulseek network, it reports '{application.Server.State}'");
             }
 
             return null;
