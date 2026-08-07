@@ -21,12 +21,24 @@ namespace NzbDrone.Core.Indexers.Slskd
         public const string ExpectedTrackCountHeader = "X-Lidarr-Expected-Tracks";
 
         /// <summary>
+        /// The largest track count among the album releases the import could settle on, used to reject
+        /// folders holding more audio than any of them could absorb.
+        /// </summary>
+        public const string MaximumTrackCountHeader = "X-Lidarr-Expected-Tracks-Max";
+
+        /// <summary>
         /// Carry the library's exact artist name and album title to the parser, base64 encoded because
         /// header values must stay ASCII. Both feed the title annotation that keeps releases mappable.
         /// </summary>
         public const string ArtistNameHeader = "X-Lidarr-Artist";
 
         public const string AlbumTitleHeader = "X-Lidarr-Album";
+
+        /// <summary>
+        /// The album's release year, which the parser needs to build a title for artists whose name
+        /// cannot survive Lidarr's criteria matching (see EnsureMappableTitle).
+        /// </summary>
+        public const string AlbumYearHeader = "X-Lidarr-Album-Year";
 
         /// <summary>
         /// slskd's searchTimeout is an inactivity window, not a total duration: a search ends this long
@@ -37,9 +49,27 @@ namespace NzbDrone.Core.Indexers.Slskd
         private const int InactivityWindowMs = 3000;
 
         /// <summary>
-        /// Words an album title needs before it is worth searching for on its own, without the artist.
+        /// Set high enough that it stops binding, leaving slskd's own cap of ~25000 files to end a
+        /// search instead. A limit that binds first keeps whoever answers fastest, which on a popular
+        /// query is dominated by folders of a better known album sharing the search terms, and hides
+        /// a third to a half of what is on offer - the album actually being searched for among it.
+        /// Rare searches never reach any limit.
         /// </summary>
-        private const int DistinctiveAlbumWordCount = 3;
+        private const int ResponseLimit = 5000;
+
+        /// <summary>
+        /// Words an album title needs before it is worth searching for on its own, without the artist.
+        /// A title of two words is specific enough that the folders sharing them are overwhelmingly the
+        /// album itself, while a single common word is not: searching one returns thousands of folders
+        /// with nothing to do with the record. Distinctiveness, not length, is what decides that, but
+        /// nothing tells them apart before the search, and the word count is the closest stand-in.
+        /// </summary>
+        private const int DistinctiveAlbumWordCount = 2;
+
+        /// <summary>
+        /// Shortest alias worth a query of its own. Initials and abbreviations match everything.
+        /// </summary>
+        private const int MinimumAliasLength = 4;
 
         // Properties first
         public SlskdIndexerSettings Settings { get; init; }
@@ -59,8 +89,8 @@ namespace NzbDrone.Core.Indexers.Slskd
         };
 
         private static readonly Regex QualifierPattern = new (@"[\(\[\{][^\)\]\}]*[\)\]\}]", RegexOptions.Compiled);
-        private static readonly Regex PunctuationPattern = new (@"[^\p{L}\p{Nd}\s]", RegexOptions.Compiled);
         private static readonly Regex WhitespacePattern = new (@"\s+", RegexOptions.Compiled);
+        private static readonly Regex LeadingDashPattern = new (@"(?<![^\s])-+(?=\S)", RegexOptions.Compiled);
 
         private static HttpRequestBuilder CreateRequestBuilder(SlskdIndexerSettings settings) =>
             new HttpRequestBuilder(settings.BaseUrl)
@@ -73,6 +103,24 @@ namespace NzbDrone.Core.Indexers.Slskd
             return albumReleases?.Value?.Any() == true
                 ? albumReleases.Value.Min(r => r.TrackCount)
                 : 0;
+        }
+
+        /// <summary>
+        /// The largest track count among the releases the import is allowed to map against — the
+        /// monitored one, or any of them when the album accepts any release. A folder with more audio
+        /// files than this cannot import cleanly: the surplus files map to nothing.
+        /// </summary>
+        private static int GetMaximumTrackCount(AlbumSearchCriteria searchCriteria)
+        {
+            var album = searchCriteria.Albums.FirstOrDefault();
+            var releases = album?.AlbumReleases?.Value;
+            if (releases == null || !releases.Any())
+            {
+                return 0;
+            }
+
+            var eligible = releases.Where(r => r.Monitored || album.AnyReleaseOk).ToList();
+            return (eligible.Any() ? eligible : releases).Max(r => r.TrackCount);
         }
 
         private static bool IsVariousArtist(Core.Music.Artist artist) =>
@@ -90,11 +138,14 @@ namespace NzbDrone.Core.Indexers.Slskd
             _requestBuilder = CreateRequestBuilder(settings);
         }
 
+        /// <summary>
+        /// Empty because Soulseek has nothing resembling a feed of recent uploads. The indexer declares
+        /// no RSS support, so nothing asks for these, and the connection test queries slskd's own state
+        /// rather than issuing a query that would have to be invented here.
+        /// </summary>
         public IndexerPageableRequestChain GetRecentRequests()
         {
-            var pageableRequests = new IndexerPageableRequestChain();
-            pageableRequests.Add(GetRequests("Silent Partner Chances", searchTimeout: 5000));
-            return pageableRequests;
+            return new IndexerPageableRequestChain();
         }
 
         public IndexerPageableRequestChain GetSearchRequests(AlbumSearchCriteria searchCriteria)
@@ -108,54 +159,94 @@ namespace NzbDrone.Core.Indexers.Slskd
 
             var chain = new IndexerPageableRequestChain();
             var minimumTrackCount = GetMinimumTrackCount(searchCriteria);
+            var maximumTrackCount = GetMaximumTrackCount(searchCriteria);
 
             // Every tier is a full slskd search that has to run to completion, so the chain is kept as
-            // short as possible: Lidarr stops at the first tier that yields anything.
-            foreach (var query in BuildQueries(searchCriteria))
+            // short as possible: Lidarr stops at the first tier that yields anything. Queries that
+            // belong together run inside one tier so neither can starve the other of the chance to run,
+            // and each must be added as its own pageable request: chained into one enumerable they
+            // read as pages of a single query, and pagination stops after the first short page, which
+            // silently drops every query after the first. Duplicated folders across the queries are
+            // collapsed by Lidarr on the release Guid.
+            foreach (var tier in BuildQueryTiers(searchCriteria))
             {
-                _logger.Debug("Adding search tier for query: {0}", query);
-                chain.AddTier(GetRequests(
-                    query,
-                    trackCount: minimumTrackCount,
-                    artistName: searchCriteria.Artist?.Name,
-                    albumTitle: searchCriteria.Albums?.FirstOrDefault()?.Title));
+                _logger.Debug("Adding search tier for queries: {0}", string.Join(" | ", tier));
+
+                var first = true;
+                foreach (var query in tier)
+                {
+                    var requests = GetRequests(
+                        query,
+                        trackCount: minimumTrackCount,
+                        maximumTrackCount: maximumTrackCount,
+                        artistName: searchCriteria.Artist?.Name,
+                        albumTitle: searchCriteria.Albums?.FirstOrDefault()?.Title,
+                        albumYear: searchCriteria.Albums?.FirstOrDefault()?.ReleaseDate?.Year ?? 0);
+
+                    if (first)
+                    {
+                        chain.AddTier(requests);
+                        first = false;
+                    }
+                    else
+                    {
+                        chain.Add(requests);
+                    }
+                }
             }
 
             return chain;
         }
 
         /// <summary>
-        /// Builds the search queries in decreasing order of expected recall.
+        /// Builds the search tiers in decreasing order of expected recall, all through one rule: the
+        /// query is the raw text a person would type, artist and album with their own spelling,
+        /// whitespace collapsed and nothing else touched.
         ///
-        /// Soulseek requires every term of a query to be present in a result, so qualifiers such as
-        /// '(Remixes)' or '[Deluxe Edition]' shrink the result set by an order of magnitude. They are
-        /// dropped rather than tried first: the broad query still returns the qualified folders, and
-        /// Lidarr decides whether they match on the parsed title.
+        /// Raw text matches how the network searches. A query travels as a list of terms split on
+        /// spaces, and each peer requires every term somewhere in the file's path: clients differ only
+        /// in whether punctuation separates tokens or is matched literally. Leaving it in place
+        /// therefore costs nothing and keeps the folders that spell a title the way the artist does,
+        /// such as "Don't", which a stripped query misses. Nothing can ask for the album's words to be
+        /// adjacent rather than scattered along the path: no client honours quoting, and binding words
+        /// with '+' only loses the peers that match punctuation literally without gaining a folder
+        /// anywhere else. Terms act as a set, so the repeated words of an album titled after its
+        /// artist cost nothing.
+        ///
+        /// The one transform left is dropping bracketed qualifiers, kept as a sibling query in the
+        /// same tier: for a title like "Told You So (Remixes Vol. 1)" the qualified query finds the
+        /// right folders while the broad one finds the base album's, and either alone loses half.
         /// </summary>
-        private IEnumerable<string> BuildQueries(AlbumSearchCriteria searchCriteria)
+        private IEnumerable<IReadOnlyList<string>> BuildQueryTiers(AlbumSearchCriteria searchCriteria)
         {
-            var album = Simplify(searchCriteria.AlbumQuery);
-            if (album.IsNullOrWhiteSpace())
-            {
-                album = Simplify(searchCriteria.CleanAlbumQuery);
-            }
+            var album = CollapseWhitespace(searchCriteria.AlbumQuery.IsNullOrWhiteSpace()
+                ? searchCriteria.CleanAlbumQuery
+                : searchCriteria.AlbumQuery);
 
-            if (album.IsNullOrWhiteSpace())
+            if (album.Length == 0)
             {
                 yield break;
             }
 
-            var candidates = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var isVariousArtist = IsVariousArtist(searchCriteria.Artist);
 
             if (!isVariousArtist)
             {
-                // Some albums are titled after their artist, and repeating the name only lengthens the
-                // query without narrowing it, since every term still has to be present
-                var artist = Simplify(searchCriteria.ArtistQuery);
-                candidates.Add(album.StartsWith(artist, StringComparison.OrdinalIgnoreCase)
-                    ? AsUnit(album)
-                    : $"{AsUnit(artist)} {AsUnit(album)}");
+                var artist = CollapseWhitespace(searchCriteria.ArtistQuery);
+                var tier = new List<string> { Normalize($"{artist} {album}", seen) };
+
+                var broadAlbum = CollapseWhitespace(QualifierPattern.Replace(album, " "));
+                if (broadAlbum.Length > 0 && !broadAlbum.Equals(album, StringComparison.OrdinalIgnoreCase))
+                {
+                    tier.Add(Normalize($"{artist} {broadAlbum}", seen));
+                }
+
+                var filtered = tier.Where(q => q != null).ToList();
+                if (filtered.Count > 0)
+                {
+                    yield return filtered;
+                }
             }
 
             // Dropping the artist widens the search to anything sharing the album's words, which only
@@ -164,67 +255,55 @@ namespace NzbDrone.Core.Indexers.Slskd
             // page of noise that Lidarr then has to reject one by one.
             if (WordCount(album) >= DistinctiveAlbumWordCount)
             {
-                candidates.Add(AsUnit(album));
-            }
-
-            if (!isVariousArtist)
-            {
-                foreach (var alias in searchCriteria.Artist.Metadata.Value.Aliases)
+                var query = Normalize(album, seen);
+                if (query != null)
                 {
-                    candidates.Add($"{AsUnit(Simplify(alias))} {AsUnit(album)}");
+                    yield return new[] { query };
                 }
             }
 
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var candidate in candidates)
+            // One alias, not all of them. An artist known internationally carries a name per writing
+            // system, and searching each one costs a query for an audience the Soulseek network does
+            // not have: a query in a script nobody names their folders in returns nothing, while the
+            // count of searches is what the server bans an account over.
+            if (!isVariousArtist)
             {
-                var query = WhitespacePattern.Replace(candidate ?? string.Empty, " ").Trim();
-                if (query.Length > 0 && seen.Add(query))
+                var alias = searchCriteria.Artist.Metadata.Value.Aliases
+                    .FirstOrDefault(a => !a.IsNullOrWhiteSpace() &&
+                                         a.Trim().Length >= MinimumAliasLength &&
+                                         !a.Equals(searchCriteria.Artist.Name, StringComparison.OrdinalIgnoreCase));
+
+                var query = alias == null ? null : Normalize($"{CollapseWhitespace(alias)} {album}", seen);
+                if (query != null)
                 {
-                    yield return query;
+                    yield return new[] { query };
                 }
             }
         }
 
+        private static string CollapseWhitespace(string value) =>
+            value.IsNullOrWhiteSpace() ? string.Empty : WhitespacePattern.Replace(value, " ").Trim();
+
         /// <summary>
-        /// Strips bracketed qualifiers and punctuation so the query stays inside what Soulseek can match.
-        /// Apostrophes are removed rather than replaced, so "Don't" stays a single term instead of
-        /// becoming "Don t" and requiring a bogus one-letter term to be present.
+        /// Drops the dash a term starts with, which the search API reads as an exclusion: a title like
+        /// "-Ology" would otherwise turn its own word into a NOT clause and search for everything but
+        /// the album. A dash standing on its own is left alone, being a separator rather than a term.
         /// </summary>
-        /// <summary>
-        /// Binds the words of a single field together with '+', so the artist and the album each act as
-        /// one unit instead of dissolving into loose terms.
-        ///
-        /// Left as separate words, an artist like "DJ Dark" matches anything holding "dj" and "dark"
-        /// anywhere in its path, and short common words drag in unrelated folders by the dozen. Bound as
-        /// units the same search returns a handful of results without losing the ones that matter.
-        /// </summary>
-        private static string AsUnit(string value) =>
-            value.IsNullOrWhiteSpace() ? value : value.Replace(' ', '+');
+        private static string Normalize(string candidate, HashSet<string> seen)
+        {
+            var query = CollapseWhitespace(LeadingDashPattern.Replace(candidate, string.Empty));
+            return query.Length > 0 && seen.Add(query) ? query : null;
+        }
 
         private static int WordCount(string value) =>
             value.IsNullOrWhiteSpace() ? 0 : value.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
-
-        private static string Simplify(string value)
-        {
-            if (value.IsNullOrWhiteSpace())
-            {
-                return string.Empty;
-            }
-
-            var simplified = QualifierPattern.Replace(value, " ");
-            simplified = simplified.Replace("'", string.Empty).Replace("’", string.Empty);
-            simplified = PunctuationPattern.Replace(simplified, " ");
-
-            return WhitespacePattern.Replace(simplified, " ").Trim();
-        }
 
         public IndexerPageableRequestChain GetSearchRequests(ArtistSearchCriteria searchCriteria)
         {
             return new IndexerPageableRequestChain();
         }
 
-        private IEnumerable<IndexerRequest> GetRequests(string searchParameters, int? searchTimeout = null, double? uploadSpeed = null, int trackCount = 0, string artistName = null, string albumTitle = null)
+        private IEnumerable<IndexerRequest> GetRequests(string searchParameters, int? searchTimeout = null, double? uploadSpeed = null, int trackCount = 0, int maximumTrackCount = 0, string artistName = null, string albumTitle = null, int albumYear = 0)
         {
             _logger.Debug(CultureInfo.InvariantCulture,
                 "Creating search request - Parameters: {0}, Timeout: {1}, Upload Speed: {2}, Track Count: {3}",
@@ -238,7 +317,7 @@ namespace NzbDrone.Core.Indexers.Slskd
                 searchTimeout ?? InactivityWindowMs,
                 uploadSpeed ?? Settings.MinimumPeerUploadSpeed);
 
-            var request = BuildSearchRequest(searchRequest, trackCount, artistName, albumTitle);
+            var request = BuildSearchRequest(searchRequest, trackCount, maximumTrackCount, artistName, albumTitle, albumYear);
             yield return new IndexerRequest(request);
         }
 
@@ -259,12 +338,12 @@ namespace NzbDrone.Core.Indexers.Slskd
                 request.MinimumPeerUploadSpeed = (int)Math.Round(uploadSpeed * 1024 * 1024); // Convert MB/s to B/s
             }
 
-            if (Settings.ResponseLimit > 0)
-            {
-                // Completes popular searches as soon as enough users answer, instead of always
-                // running out the full timeout
-                request.ResponseLimit = Settings.ResponseLimit;
-            }
+            // Fixed rather than configurable, calibrated by measurement: popular searches stop on
+            // their own well before this (slskd caps a search at ~25000 files), mid searches have
+            // populations in the hundreds that a lower limit would truncate — cutting out exactly the
+            // peers being searched for — and rare searches never reach any limit. Every value above
+            // the mid-search population behaves identically, so there is no trade-off to expose.
+            request.ResponseLimit = ResponseLimit;
 
             if (Settings.MaximumPeerQueueLength > 0)
             {
@@ -275,7 +354,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             return request;
         }
 
-        private HttpRequest BuildSearchRequest(SearchRequest searchRequest, int trackCount, string artistName, string albumTitle)
+        private HttpRequest BuildSearchRequest(SearchRequest searchRequest, int trackCount, int maximumTrackCount, string artistName, string albumTitle, int albumYear)
         {
             var json = searchRequest.ToJson();
             var request = _requestBuilder
@@ -302,6 +381,16 @@ namespace NzbDrone.Core.Indexers.Slskd
             if (albumTitle.IsNotNullOrWhiteSpace())
             {
                 request.Headers.Add(AlbumTitleHeader, FileProcessingUtils.Base64Encode(albumTitle));
+            }
+
+            if (albumYear > 0)
+            {
+                request.Headers.Add(AlbumYearHeader, albumYear.ToString(CultureInfo.InvariantCulture));
+            }
+
+            if (maximumTrackCount > 0)
+            {
+                request.Headers.Add(MaximumTrackCountHeader, maximumTrackCount.ToString(CultureInfo.InvariantCulture));
             }
 
             return request;

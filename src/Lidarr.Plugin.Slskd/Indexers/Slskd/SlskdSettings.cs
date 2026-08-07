@@ -13,7 +13,6 @@ namespace NzbDrone.Core.Indexers.Slskd
             RuleFor(c => c.ApiKey).NotEmpty();
             RuleFor(c => c.MinimumPeerUploadSpeed).GreaterThanOrEqualTo(0);
             RuleFor(c => c.MaximumPeerQueueLength).GreaterThanOrEqualTo(0);
-            RuleFor(c => c.ResponseLimit).GreaterThanOrEqualTo(0);
         }
     }
 
@@ -39,10 +38,7 @@ namespace NzbDrone.Core.Indexers.Slskd
         [FieldDefinition(5, Type = FieldType.Number, Label = "Maximum Queue Length", HelpText = "Hide results from users with more uploads queued than this. 0 shows everyone", Advanced = true)]
         public int MaximumPeerQueueLength { get; set; }
 
-        [FieldDefinition(6, Type = FieldType.Number, Label = "Response Limit", HelpText = "End a search once this many users have responded. 0 waits for the full search", Advanced = true)]
-        public int ResponseLimit { get; set; } = 50;
-
-        [FieldDefinition(7, Type = FieldType.Checkbox, Label = "Allow Incomplete Releases", HelpText = "Offer results with fewer audio files than the album has tracks. They usually fail to import automatically but can be grabbed manually", Advanced = true)]
+        [FieldDefinition(6, Type = FieldType.Checkbox, Label = "Allow Incomplete Releases", HelpText = "Offer results with fewer audio files than the album has tracks. They usually fail to import automatically but can be grabbed manually", Advanced = true)]
         public bool AllowIncompleteReleases { get; set; }
 
         public NzbDroneValidationResult Validate()
