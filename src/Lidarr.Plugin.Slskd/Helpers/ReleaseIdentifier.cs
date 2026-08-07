@@ -30,11 +30,16 @@ public static class ReleaseIdentifier
         Compute(username, folder);
 
     /// <summary>
+    /// Appends the album to the release identifier rather than hashing the pair. Hashing would be
+    /// just as unique but would discard the indexer id Lidarr prefixes onto every release guid, and
+    /// that prefix is what makes a folder sitting in slskd legible: it names which side created it.
+    /// Both parts stay readable, so a download directory can be traced back to its grab by eye.
+    ///
     /// Derived rather than drawn at random so that re-grabbing the same folder for the same album
     /// settles on the batch and destination already in flight instead of starting a second copy.
     /// </summary>
     public static string ForDownload(string releaseIdentifier, int albumId) =>
-        Compute(releaseIdentifier, albumId.ToString(CultureInfo.InvariantCulture));
+        $"{releaseIdentifier}_{albumId.ToString(CultureInfo.InvariantCulture)}";
 
     private static string Compute(params string[] parts)
     {
