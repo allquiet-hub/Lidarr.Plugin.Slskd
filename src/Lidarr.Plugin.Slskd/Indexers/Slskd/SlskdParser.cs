@@ -557,7 +557,7 @@ namespace NzbDrone.Core.Indexers.Slskd
         {
             var isSingleFile = audioFiles.Count == 1;
             var downloadPath = isSingleFile ? audioFiles[0].FileName : groupKey;
-            var identifier = ReleaseIdentifier.Compute($"{response.Username}{groupKey}");
+            var identifier = ReleaseIdentifier.ForRelease(response.Username, groupKey);
 
             var totalSize = audioFiles.Sum(file => file.Size);
             var releaseInfo = new SlskdReleaseInfo

@@ -64,12 +64,12 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
             try
             {
-                // The identifier travels with the release instead of being recomputed from the download
-                // path: that path is the folder for albums but the file itself for single-file releases,
-                // so deriving it a second time here would not always agree with what the queue reports.
-                // The completed folder is named "Artist - Album" because that name does double duty:
-                // Lidarr identifies what it imported largely from it, and the queue maps a download back
-                // to its album only by parsing a title, never by the ids already sitting in history.
+                // The release identifier travels with the release instead of being recomputed from the
+                // download path: that path is the folder for albums but the file itself for single-file
+                // releases, so deriving it a second time here would not always agree with what the queue
+                // reports. The completed folder is named "Artist - Album" because that name does double
+                // duty: Lidarr identifies what it imported largely from it, and the queue maps a download
+                // back to its album only by parsing a title, never by the ids already sitting in history.
                 // A parsed title resolves through normalised lookups that forgive punctuation, while the
                 // history fallback demands the library's exact punctuation inside a stranger's folder name.
                 var album = remoteAlbum.Albums?.FirstOrDefault();
@@ -78,7 +78,16 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                     ? album?.Title
                     : $"{artistName} - {album.Title}";
 
-                return Task.FromResult(_proxy.Download(release.Origin, release.Source, release.DownloadUrl, release.Guid, folderName, Settings));
+                // What Lidarr tracks is the grab, not the folder, so the album has to be part of the
+                // identity: the same folder is offered for the album and for every single whose track it
+                // contains, and one identifier across those grabs merges them into a single tracked
+                // download that no import can satisfy. A grab carrying no album leaves nothing finer to
+                // key on than the release itself.
+                var downloadId = album == null
+                    ? release.Guid
+                    : ReleaseIdentifier.ForDownload(release.Guid, album.Id);
+
+                return Task.FromResult(_proxy.Download(release.Origin, release.Source, release.DownloadUrl, downloadId, folderName, Settings));
             }
             catch (SlskdPeerUnavailableException ex)
             {
