@@ -32,12 +32,16 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
         private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(500);
 
+        private static readonly TimeSpan RemovalDrainTimeout = TimeSpan.FromSeconds(15);
+
         private readonly IHttpClient _httpClient;
         private readonly Logger _logger;
 
-        // Batch options never change once the batch is created, so they can be cached indefinitely.
-        // A null value marks a batch that could not be resolved, to avoid hammering the API.
-        private readonly ConcurrentDictionary<string, BatchOptions> _batchOptionsCache = new ();
+        // A batch never changes once created, so entries can be cached indefinitely. A null value marks
+        // a batch slskd positively does not know (404), for which the legacy grouping is the correct
+        // identity; transient lookup failures are deliberately never cached, because answering with the
+        // legacy identity while the batch still exists would change the download id mid-flight.
+        private readonly ConcurrentDictionary<string, CachedBatch> _batchCache = new ();
         private readonly ConcurrentDictionary<string, (DateTime Expiry, bool Supported)> _batchSupportCache = new ();
 
         public SlskdProxy(IHttpClient httpClient, Logger logger)
@@ -134,11 +138,21 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                     foreach (var batch in audioFiles.GroupBy(f => f.BatchId ?? string.Empty, StringComparer.Ordinal))
                     {
                         var files = batch.ToList();
-                        var batchDownloadId = ResolveDownloadId(batch.Key, settings);
+
+                        if (!TryResolveDownloadId(batch.Key, settings, out var batchDownloadId))
+                        {
+                            // The batch exists but could not be looked up right now. Reporting its files
+                            // under the fallback identity would change the download id mid-flight, which
+                            // reads to Lidarr as the tracked download vanishing and a foreign one
+                            // appearing. Leaving them out for one poll is invisible in comparison.
+                            _logger.Debug($"Batch '{batch.Key}' could not be resolved, leaving its files out of this queue poll");
+                            continue;
+                        }
 
                         string key;
                         OsPath outputPath;
                         string titleBase = null;
+                        int? expectedFiles = null;
 
                         if (batchDownloadId != null)
                         {
@@ -149,6 +163,11 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                             // so the queue can hand Lidarr a parseable title: parsing is the only route
                             // by which a tracked download gets mapped back to its album.
                             titleBase = GetBatchAlbumFolder(batch.Key);
+
+                            if (_batchCache.TryGetValue(batch.Key, out var cachedBatch))
+                            {
+                                expectedFiles = cachedBatch?.ExpectedFiles;
+                            }
                         }
                         else
                         {
@@ -156,7 +175,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                             // reconstructed from the remote path. Disc sub-folders (CD1, CD2, ...) are
                             // merged under their parent so the id matches the one computed during search.
                             var canonicalDir = GetCanonicalDirectory(directory.Directory);
-                            key = Crc32Hasher.Crc32Base64($"{queue.Username}{canonicalDir}");
+                            key = ReleaseIdentifier.Compute($"{queue.Username}{canonicalDir}");
                             outputPath = completedDownloadsPath + files[0].FirstParentFolder;
                         }
 
@@ -166,6 +185,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                         }
 
                         group.Files.AddRange(files);
+                        group.AddExpectedFiles(expectedFiles);
                     }
                 }
             }
@@ -184,6 +204,18 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 var message = $"Downloaded from user {group.Username}";
 
                 var (status, statusMessage) = FileProcessingUtils.GetQueuedFilesStatus(audioFiles);
+
+                // The queue only shows transfers that still exist: one aborted and then removed (or
+                // expired through slskd's retention) leaves the remaining files looking like a complete,
+                // successful download, and Lidarr would import a partial album. The enqueue counts are
+                // the memory of what the release was supposed to contain.
+                if (status == DownloadItemStatus.Completed && group.ExpectedFiles > audioFiles.Count)
+                {
+                    status = DownloadItemStatus.Failed;
+                    statusMessage = $"Only {audioFiles.Count} of {group.ExpectedFiles} enqueued files are still in the slskd queue, " +
+                                    "the others were removed before completing";
+                }
+
                 if (statusMessage != null)
                 {
                     message = statusMessage;
@@ -299,7 +331,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                     // Match on the individual transfers rather than the whole directory: it can also hold
                     // files enqueued outside of Lidarr, and those must not be cancelled.
                     var batchFiles = directory.Files
-                        .Where(f => ResolveDownloadId(f.BatchId, settings) == downloadId)
+                        .Where(f => TryResolveDownloadId(f.BatchId, settings, out var id) && id == downloadId)
                         .ToList();
 
                     if (batchFiles.Any())
@@ -311,7 +343,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                     }
 
                     var canonicalDir = GetCanonicalDirectory(directory.Directory);
-                    if (Crc32Hasher.Crc32Base64($"{queue.Username}{canonicalDir}") == downloadId)
+                    if (ReleaseIdentifier.Compute($"{queue.Username}{canonicalDir}") == downloadId)
                     {
                         matchingFiles.AddRange(directory.Files.Select(file => (queue.Username, file)));
                         matchingDirectories.Add(directory);
@@ -325,28 +357,26 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 return;
             }
 
+            // Cancel everything first and only then wait: a transfer takes time to reach a terminal
+            // state after its cancellation, and waiting per file serialises those transitions into
+            // minutes for a large album, all spent inside the request that asked for the removal.
+            // Cancelled this way they all transition concurrently, bounded by one shared deadline.
             foreach (var (username, file) in matchingFiles)
             {
                 CancelUserDownloadFile(username, file.Id, false, settings);
-
-                if (!deleteData)
-                {
-                    continue;
-                }
-
-                // The queue already reported the state, so only transfers still running need to be
-                // waited on before slskd will let go of the file
-                if (file.TransferState?.State != TransferStates.Completed)
-                {
-                    WaitForFileCompleted(username, file.Id, settings);
-                }
-
-                CancelUserDownloadFile(username, file.Id, true, settings);
             }
 
             if (!deleteData)
             {
                 return;
+            }
+
+            // slskd will not let go of a file until its transfer is terminal
+            WaitForTransfersCompleted(matchingFiles, settings);
+
+            foreach (var (username, file) in matchingFiles)
+            {
+                CancelUserDownloadFile(username, file.Id, true, settings);
             }
 
             string directoryToDelete;
@@ -367,6 +397,65 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             }
 
             DeleteDownloadDirectory(directoryToDelete, settings);
+        }
+
+        /// <summary>
+        /// Fetches the raw YAML configuration file. Requires an API key with the administrator role and
+        /// 'remote_configuration' enabled in slskd; both are reported as an authorization error.
+        /// </summary>
+        public string GetOptionsYaml(SlskdSettings settings)
+        {
+            var content = _httpClient.Get(BuildRequest(settings, "/api/v0/options/yaml").Build()).Content;
+
+            // The endpoint serves the file as a JSON-encoded string
+            return content?.TrimStart().StartsWith('"') == true
+                ? Newtonsoft.Json.JsonConvert.DeserializeObject<string>(content)
+                : content;
+        }
+
+        /// <summary>
+        /// Asks slskd itself whether the YAML parses into a valid configuration, returning its error
+        /// text or null when valid. Anything written with SaveOptionsYaml must pass through here first:
+        /// the file is hand-maintained and an unparseable write would take the whole instance down on
+        /// its next restart.
+        /// </summary>
+        public string ValidateOptionsYaml(string yaml, SlskdSettings settings)
+        {
+            try
+            {
+                Execute(BuildRequest(settings, "/api/v0/options/yaml/validate").Post(), yaml.ToJson());
+                return null;
+            }
+            catch (HttpException httpException) when (httpException.Response?.StatusCode == HttpStatusCode.BadRequest)
+            {
+                return httpException.Response.Content ?? "slskd rejected the configuration";
+            }
+        }
+
+        public void SaveOptionsYaml(string yaml, SlskdSettings settings)
+        {
+            var request = BuildRequest(settings, "/api/v0/options/yaml").Build();
+            request.Method = HttpMethod.Put;
+            request.Headers.ContentType = "application/json";
+            request.SetContent(yaml.ToJson());
+            _httpClient.Execute(request);
+        }
+
+        public int CountActiveDownloads(SlskdSettings settings)
+        {
+            var queues = ExecuteGet<List<DownloadsQueue>>(BuildRequest(settings, "/api/v0/transfers/downloads/"));
+
+            return queues?
+                .SelectMany(q => q.Directories)
+                .SelectMany(d => d.Files)
+                .Count(f => !f.Removed && f.TransferState?.State != TransferStates.Completed) ?? 0;
+        }
+
+        public void Restart(SlskdSettings settings)
+        {
+            var request = BuildRequest(settings, "/api/v0/application/").Build();
+            request.Method = HttpMethod.Put;
+            _httpClient.Execute(request);
         }
 
         // Download Helpers
@@ -442,7 +531,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                     enqueued.Add(response.Batch.Id);
 
                     // Seed the cache so the first queue poll does not need to look the batch up
-                    CacheBatchOptions(response.Batch.Id, body.Options);
+                    CacheBatch(response.Batch.Id, new CachedBatch(body.Options, body.Files.Count));
                 }
             }
         }
@@ -472,33 +561,46 @@ namespace NzbDrone.Core.Download.Clients.Slskd
         }
 
         /// <summary>
-        /// Returns the download ID of a Lidarr-owned batch, or null when the batch is unknown or was
-        /// created outside of Lidarr (in which case the legacy path reconstruction is used instead).
+        /// Resolves the download ID of a Lidarr-owned batch. A null ID with a true return means the
+        /// files positively do not belong to a Lidarr batch (never batched, or slskd does not know the
+        /// batch) and the legacy path reconstruction applies. False means the lookup failed transiently
+        /// and no identity can be assigned right now: nothing is cached, so the next poll retries.
         /// </summary>
-        private string ResolveDownloadId(string batchId, SlskdSettings settings)
+        private bool TryResolveDownloadId(string batchId, SlskdSettings settings, out string downloadId)
         {
+            downloadId = null;
+
             if (string.IsNullOrEmpty(batchId))
             {
-                return null;
+                return true;
             }
 
-            if (!_batchOptionsCache.TryGetValue(batchId, out var options))
+            if (_batchCache.TryGetValue(batchId, out var cached))
             {
-                try
-                {
-                    var batch = ExecuteGet<Batch>(BuildRequest(settings, $"/api/v0/transfers/downloads/batches/{batchId}/"));
-                    options = batch?.Options;
-                }
-                catch (HttpException httpException)
-                {
-                    _logger.Debug($"Could not retrieve batch '{batchId}': {httpException.Message}");
-                    options = null;
-                }
-
-                CacheBatchOptions(batchId, options);
+                downloadId = GetDownloadIdFromDestination(cached?.Options?.Destination);
+                return true;
             }
 
-            return GetDownloadIdFromDestination(options?.Destination);
+            Batch batch;
+
+            try
+            {
+                batch = ExecuteGet<Batch>(BuildRequest(settings, $"/api/v0/transfers/downloads/batches/{batchId}/"));
+            }
+            catch (HttpException httpException) when (httpException.Response?.StatusCode == HttpStatusCode.NotFound)
+            {
+                CacheBatch(batchId, null);
+                return true;
+            }
+            catch (HttpException httpException)
+            {
+                _logger.Debug($"Could not retrieve batch '{batchId}': {httpException.Message}");
+                return false;
+            }
+
+            CacheBatch(batchId, batch == null ? null : new CachedBatch(batch.Options, batch.Transfers?.Count));
+            downloadId = GetDownloadIdFromDestination(batch?.Options?.Destination);
+            return true;
         }
 
         /// <summary>
@@ -521,15 +623,15 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 : null;
         }
 
-        private void CacheBatchOptions(string batchId, BatchOptions options)
+        private void CacheBatch(string batchId, CachedBatch batch)
         {
             // Bounded to keep long-running instances from accumulating entries indefinitely
-            if (_batchOptionsCache.Count >= BatchCacheLimit)
+            if (_batchCache.Count >= BatchCacheLimit)
             {
-                _batchOptionsCache.Clear();
+                _batchCache.Clear();
             }
 
-            _batchOptionsCache[batchId] = options;
+            _batchCache[batchId] = batch;
         }
 
         /// <summary>
@@ -564,12 +666,12 @@ namespace NzbDrone.Core.Download.Clients.Slskd
         /// </summary>
         private string GetBatchAlbumFolder(string batchId)
         {
-            if (string.IsNullOrEmpty(batchId) || !_batchOptionsCache.TryGetValue(batchId, out var options))
+            if (string.IsNullOrEmpty(batchId) || !_batchCache.TryGetValue(batchId, out var cached))
             {
                 return null;
             }
 
-            var segments = options?.Destination?.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+            var segments = cached?.Options?.Destination?.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
             return segments?.Length >= 3 ? segments[2] : null;
         }
 
@@ -668,26 +770,50 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             _logger.Trace($"Canceled and removed file '{fileId}' for user '{username}'. DeleteFile: {deleteFile}");
         }
 
-        private void WaitForFileCompleted(string username, string fileId, SlskdSettings settings)
+        /// <summary>
+        /// Waits until every given transfer has reached a terminal state, with one deadline shared by
+        /// all of them rather than one per file: the transitions happen concurrently on the slskd side,
+        /// so the total wait is bounded by the slowest transfer instead of by the number of files.
+        /// </summary>
+        private void WaitForTransfersCompleted(List<(string Username, DirectoryFile File)> transfers, SlskdSettings settings)
         {
-            var stopwatch = Stopwatch.StartNew();
-            var timeout = TimeSpan.FromSeconds(10);
+            var pending = transfers
+                .Where(t => t.File.TransferState?.State != TransferStates.Completed)
+                .Select(t => t.File.Id)
+                .ToHashSet(StringComparer.Ordinal);
 
-            while (stopwatch.Elapsed < timeout)
+            if (pending.Count == 0)
             {
-                var file = ExecuteGet<DirectoryFile>(BuildRequest(settings, $"/api/v0/transfers/downloads/{username}/{fileId}/"));
-                if (file?.TransferState?.State == TransferStates.Completed)
-                {
-                    _logger.Trace($"File '{fileId}' for user '{username}' is marked as completed.");
-                    return;
-                }
+                return;
+            }
 
+            var stopwatch = Stopwatch.StartNew();
+
+            while (stopwatch.Elapsed < RemovalDrainTimeout)
+            {
                 // Paced here rather than through Lidarr's rate limiter, which is keyed by host and would
                 // make these polls contend with the indexer's own requests to the same slskd instance
                 Thread.Sleep(PollInterval);
+
+                var queues = ExecuteGet<List<DownloadsQueue>>(BuildRequest(settings, "/api/v0/transfers/downloads/"));
+
+                // A transfer no longer listed is as gone as a completed one
+                var stillActive = queues?
+                    .SelectMany(q => q.Directories)
+                    .SelectMany(d => d.Files)
+                    .Where(f => pending.Contains(f.Id) && f.TransferState?.State != TransferStates.Completed)
+                    .Select(f => f.Id)
+                    .ToHashSet(StringComparer.Ordinal);
+
+                if (stillActive == null || stillActive.Count == 0)
+                {
+                    return;
+                }
+
+                pending = stillActive;
             }
 
-            _logger.Warn($"Timeout waiting for file '{fileId}' to complete for user '{username}'.");
+            _logger.Warn($"Timed out waiting for {pending.Count} transfers to reach a terminal state, removing them anyway");
         }
 
         private sealed class QueueGroup
@@ -703,6 +829,30 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             public OsPath OutputPath { get; }
             public string TitleBase { get; }
             public List<DirectoryFile> Files { get; } = new ();
+
+            /// <summary>
+            /// How many files the group's batches enqueued in total, or null when any part of the group
+            /// cannot vouch for its count (legacy transfers, or a batch fetched without its transfers),
+            /// in which case the completeness check is skipped rather than guessed at.
+            /// </summary>
+            public int? ExpectedFiles { get; private set; } = 0;
+
+            public void AddExpectedFiles(int? count)
+            {
+                ExpectedFiles = ExpectedFiles.HasValue && count.HasValue ? ExpectedFiles.Value + count.Value : null;
+            }
+        }
+
+        private sealed class CachedBatch
+        {
+            public CachedBatch(BatchOptions options, int? expectedFiles)
+            {
+                Options = options;
+                ExpectedFiles = expectedFiles;
+            }
+
+            public BatchOptions Options { get; }
+            public int? ExpectedFiles { get; }
         }
     }
 }

@@ -343,18 +343,18 @@ public static class FileProcessingUtils
                 return (DownloadItemStatus.Completed, null);
             }
 
-            var allFailed = states.All(s => FailedSubStates.Contains(s.SubState));
-            if (allFailed)
-            {
-                return (DownloadItemStatus.Failed, $"All files in directory {files[0].ParentPath} from user {files[0].Username} have failed");
-            }
-
-            var succeededCount = states.Count(s => s.SubState == TransferSubStates.Succeeded);
             var failedCount = states.Count(s => FailedSubStates.Contains(s.SubState));
 
-            if (succeededCount > 0 && failedCount > 0)
+            // Every transfer is terminal and no retry is scheduled, so this download will never
+            // complete on its own. Failing it is what lets Lidarr act: a warning would leave the
+            // item sitting in the queue forever, while a failure blocklists this copy of the
+            // release and lets another one be grabbed.
+            if (failedCount > 0)
             {
-                return (DownloadItemStatus.Warning, $"{succeededCount} files downloaded, {failedCount} failed, consider retrying the download from the slskd client");
+                var message = failedCount == states.Count
+                    ? $"All files from user {files[0].Username} failed to download"
+                    : $"{failedCount} of {states.Count} files failed and slskd will not retry them";
+                return (DownloadItemStatus.Failed, message);
             }
         }
 
