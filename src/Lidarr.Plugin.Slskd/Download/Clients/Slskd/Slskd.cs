@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
+using System.Threading;
 using System.Threading.Tasks;
 using FluentValidation.Results;
 using NLog;
@@ -15,6 +17,7 @@ using NzbDrone.Core.Parser.Model;
 using NzbDrone.Core.RemotePathMappings;
 using NzbDrone.Core.Validation;
 using NzbDrone.Plugin.Slskd.Helpers;
+using NzbDrone.Plugin.Slskd.Models;
 
 namespace NzbDrone.Core.Download.Clients.Slskd
 {
@@ -114,23 +117,6 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 };
             }
 
-            // if (!config.CreateAlbumFolder)
-            // {
-            //     return new NzbDroneValidationFailure(string.Empty, "Slskd must have 'Create Album Folders' enabled")
-            //     {
-            //         InfoLink = HttpRequestBuilder.BuildBaseUrl(Settings.UseSsl, Settings.Host, Settings.Port, Settings.UrlBase),
-            //         DetailedDescription = "Slskd must have 'Create Album Folders' enabled, otherwise Lidarr will not be able to import the downloads",
-            //     };
-            // }
-            //
-            // if (!config.CreateSingleFolder)
-            // {
-            //     return new NzbDroneValidationFailure(string.Empty, "Slskd must have 'Create folder structure for singles' enabled")
-            //     {
-            //         InfoLink = HttpRequestBuilder.BuildBaseUrl(Settings.UseSsl, Settings.Host, Settings.Port, Settings.UrlBase),
-            //         DetailedDescription = "Slskd must have 'Create folder structure for singles' enabled, otherwise Lidarr will not be able to import single downloads",
-            //     };
-            // }
             var connectivity = _proxy.TestConnectivity(Settings);
             if (!connectivity)
             {
@@ -141,6 +127,153 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 };
             }
 
+            if (Settings.RepairConfiguration)
+            {
+                var repairResult = RepairConfiguration(config);
+                if (repairResult != null)
+                {
+                    return repairResult;
+                }
+            }
+
+            return TestBatchSupport();
+        }
+
+        /// <summary>
+        /// Rewrites the slskd settings that break the integration, restarting slskd when the change
+        /// needs one — but never while transfers are active, because a restart kills them. Every
+        /// outcome is reported through a validation warning so the user learns what happened, or what
+        /// still has to be done by hand, directly from the Test button.
+        /// </summary>
+        private ValidationFailure RepairConfiguration(SlskdOptions options)
+        {
+            var issues = SlskdConfigIssues.Find(options);
+            if (issues.Count == 0)
+            {
+                return null;
+            }
+
+            var issueNames = string.Join(", ", issues.Select(i => i.ShortName));
+
+            try
+            {
+                string yaml;
+
+                try
+                {
+                    yaml = _proxy.GetOptionsYaml(Settings);
+                }
+                catch (HttpException httpException) when (httpException.Response?.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                {
+                    return RepairWarning($"slskd configuration needs fixing ({issueNames}), but editing it remotely requires an API key " +
+                                         "with the administrator role and 'remote_configuration: true' in slskd. Fix it manually instead.");
+                }
+
+                var changed = false;
+                var unfixable = new List<string>();
+
+                foreach (var issue in issues)
+                {
+                    var (edited, editChanged, found) = SlskdYamlEditor.SetValue(yaml, issue.YamlPath, issue.DesiredValue);
+                    if (!found)
+                    {
+                        unfixable.Add(issue.ShortName);
+                        continue;
+                    }
+
+                    yaml = edited;
+                    changed |= editChanged;
+                }
+
+                if (changed)
+                {
+                    var validationError = _proxy.ValidateOptionsYaml(yaml, Settings);
+                    if (validationError != null)
+                    {
+                        return RepairWarning($"The rewritten slskd configuration failed slskd's own validation and was not saved: {validationError}. " +
+                                             $"Fix manually: {issueNames}.");
+                    }
+
+                    _proxy.SaveOptionsYaml(yaml, Settings);
+                    _logger.Info($"Rewrote slskd configuration ({issueNames})");
+                }
+
+                if (unfixable.Any())
+                {
+                    return RepairWarning($"Could not locate {string.Join(", ", unfixable)} in slskd's configuration file, fix manually.");
+                }
+
+                if (_proxy.GetApplication(Settings)?.PendingRestart != true)
+                {
+                    // slskd watches its configuration file and applies what it can without a restart
+                    return SlskdConfigIssues.Find(_proxy.GetOptions(Settings)).Count == 0
+                        ? RepairWarning($"slskd configuration was repaired ({issueNames}), no restart was needed.")
+                        : RepairWarning("slskd's config file was updated but the running instance still reports the old values, restart slskd manually.");
+                }
+
+                var activeDownloads = _proxy.CountActiveDownloads(Settings);
+                if (activeDownloads > 0)
+                {
+                    return RepairWarning($"slskd's config file was updated but a restart is needed to apply it, and {activeDownloads} downloads are active. " +
+                                         "Restart slskd manually or run Test again when the queue is idle.");
+                }
+
+                try
+                {
+                    _proxy.Restart(Settings);
+                }
+                catch (HttpException httpException) when (httpException.Response?.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                {
+                    return RepairWarning("slskd's config file was updated but restarting slskd requires an API key with the administrator role, restart it manually.");
+                }
+
+                if (!WaitForRestart())
+                {
+                    return RepairWarning("slskd is restarting to apply the repaired configuration, run Test again in a moment.");
+                }
+
+                return SlskdConfigIssues.Find(_proxy.GetOptions(Settings)).Count == 0
+                    ? RepairWarning($"slskd configuration was repaired ({issueNames}) and slskd was restarted.")
+                    : RepairWarning($"slskd was restarted but still reports problems ({issueNames}), fix manually.");
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn(ex, "Repairing the slskd configuration failed");
+                return RepairWarning($"Repairing the slskd configuration failed ({ex.Message}), fix manually: {issueNames}.");
+            }
+        }
+
+        private bool WaitForRestart()
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(45);
+
+            while (DateTime.UtcNow < deadline)
+            {
+                Thread.Sleep(TimeSpan.FromSeconds(2));
+
+                try
+                {
+                    if (_proxy.GetApplication(Settings) != null)
+                    {
+                        return true;
+                    }
+                }
+                catch (Exception)
+                {
+                    // Still coming back up
+                }
+            }
+
+            return false;
+        }
+
+        private static NzbDroneValidationFailure RepairWarning(string message)
+        {
+            return new NzbDroneValidationFailure(string.Empty, message) { IsWarning = true };
+        }
+
+        private ValidationFailure TestBatchSupport()
+        {
             if (!_proxy.SupportsBatches(Settings))
             {
                 return new NzbDroneValidationFailure(string.Empty, $"Slskd {SlskdCapabilities.BatchesMinimumVersion} or newer is recommended")

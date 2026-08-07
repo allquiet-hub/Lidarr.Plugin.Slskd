@@ -35,6 +35,7 @@ the `readwrite` role.
 | Use SSL | Only if slskd serves HTTPS |
 | Url Base | Only if slskd sits behind a reverse proxy on a sub-path |
 | API Key | An slskd API key with the `readwrite` role |
+| Fix slskd Config on Test | Off by default. When Test finds slskd settings that break the integration, rewrites slskd's config file — the edit is validated by slskd itself before being saved, and everything else in the file is left untouched — and restarts slskd if the change needs it. The restart is skipped while downloads are active; Test then says to restart manually or try again when the queue is idle. Needs an `administrator` API key and `remote_configuration: true` in slskd. |
 
 **Test** reports a warning rather than an error if slskd is older than 0.26.0 — the plugin still
 works, but read [slskd version](#slskd-version).

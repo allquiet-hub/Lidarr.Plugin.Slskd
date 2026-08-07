@@ -37,6 +37,9 @@ namespace NzbDrone.Core.Download.Clients.Slskd
         [FieldDefinition(4, Label = "API Key", Type = FieldType.Textbox, Privacy = PrivacyLevel.ApiKey)]
         public string ApiKey { get; set; } = "";
 
+        [FieldDefinition(5, Label = "Fix slskd Config on Test", Type = FieldType.Checkbox, HelpText = "When Test finds slskd settings that break the integration, rewrite slskd's config file and restart it if required. The restart is skipped while slskd has active downloads. Needs an API key with the administrator role and 'remote_configuration' enabled in slskd")]
+        public bool RepairConfiguration { get; set; }
+
         public NzbDroneValidationResult Validate()
         {
             return new NzbDroneValidationResult(Validator.Validate(this));

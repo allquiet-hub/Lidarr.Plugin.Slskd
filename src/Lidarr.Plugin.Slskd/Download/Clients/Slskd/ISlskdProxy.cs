@@ -18,4 +18,14 @@ public interface ISlskdProxy
     string Download(string searchId, string username, string downloadPath, string identifier, string albumTitle, SlskdSettings settings);
 
     void RemoveFromQueue(string downloadId, bool deleteData, SlskdSettings settings);
+
+    string GetOptionsYaml(SlskdSettings settings);
+
+    string ValidateOptionsYaml(string yaml, SlskdSettings settings);
+
+    void SaveOptionsYaml(string yaml, SlskdSettings settings);
+
+    int CountActiveDownloads(SlskdSettings settings);
+
+    void Restart(SlskdSettings settings);
 }
