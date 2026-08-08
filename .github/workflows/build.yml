@@ -82,11 +82,9 @@ jobs:
         with:
           name: net8.0
       - name: Compose release notes
-        id: notes
         run: |
           previous=$(git for-each-ref --sort=-v:refname --count=1 --format='%(refname:short)' 'refs/tags/v*')
           {
-            echo "body<<RELEASE_NOTES_EOF"
             echo "Adds Slskd (Soulseek) to Lidarr as both an indexer and a download client. Both have"
             echo "to be added in Lidarr; see the [readme](https://github.com/${{ github.repository }}#readme) for setup."
             echo
@@ -109,20 +107,32 @@ jobs:
               git log --no-merges --pretty=format:'- %s (`%h`)'
               echo
             fi
-            echo "RELEASE_NOTES_EOF"
-          } >> "$GITHUB_OUTPUT"
-      - uses: meeDamian/github-release@2.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag: v${{ env.PLUGIN_VERSION }}
-          # Lidarr only offers an update when the release points at a branch named main or
-          # master; a commit sha reads as an unknown tree and the release is skipped. GitHub
-          # also degrades a sha back into the raw value once history moves past it.
-          commitish: ${{ github.ref_name }}
-          name: Slskd Plugin
-          body: ${{ steps.notes.outputs.body }}
-          draft: true
-          prerelease: true
-          files: >
-            ${{ env.PLUGIN_NAME }}.net8.0.zip
-          gzip: false
+          } > release-notes.md
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ env.PLUGIN_VERSION }}
+        run: |
+          # A draft left by an earlier push of this same version is replaced rather than duplicated,
+          # since pushing to main repeatedly before publishing is the normal way to work. A release
+          # that is already published is never touched: reaching it means the version was not bumped,
+          # and the build should say so instead of quietly replacing something users can see.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = "true" ]; then
+              gh release delete "$TAG" --yes
+            else
+              echo "::error::$TAG is already published. Bump PLUGIN_VERSION before pushing."
+              exit 1
+            fi
+          fi
+
+          # --target names a branch rather than a sha on purpose: Lidarr only offers an update when
+          # the release points at a branch called main or master, a sha reads to it as an unknown
+          # tree, and GitHub degrades a sha back into the raw value once history moves past it.
+          gh release create "$TAG" \
+            --target "$GITHUB_REF_NAME" \
+            --title "Slskd Plugin" \
+            --notes-file release-notes.md \
+            --draft \
+            --prerelease \
+            "$PLUGIN_NAME.net8.0.zip"
