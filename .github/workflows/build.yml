@@ -3,14 +3,20 @@ on:
   push:
     branches:
       - main
-      - master
     tags-ignore:
       - '**'
   pull_request:
   workflow_dispatch:
 
+# Read by default; only the job that creates the release is granted write.
 permissions:
-  contents: write
+  contents: read
+
+# Two pushes in quick succession would otherwise race to create the same release. Queued rather
+# than cancelled: cancelling mid-publish can leave a release created with its asset missing.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   # Stop wasting time caching packages
@@ -28,13 +34,14 @@ jobs:
       matrix:
         framework: [ net8.0 ]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: true
       - name: Setup .NET Core
-        uses: actions/setup-dotnet@v3
+        uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
       - name: Create global.json
@@ -60,11 +67,14 @@ jobs:
     needs: build
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
       # Full history so the notes can diff against the previous tag. The release tag itself does
       # not exist yet, so the newest tag present is the previous release.
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Download Artifact (net8.0)
