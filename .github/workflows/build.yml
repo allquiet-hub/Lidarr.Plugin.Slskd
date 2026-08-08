@@ -37,11 +37,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: true
       - name: Setup .NET Core
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
       - name: Create global.json
@@ -59,7 +59,7 @@ jobs:
       - name: Build
         run: dotnet publish src/*.sln -c Release -f ${{ matrix.framework }} -p:NuGetAudit=false
       - name: Upload net core
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.framework }}
           path: ./${{ env.PLUGIN_NAME }}.${{ matrix.framework }}.zip
@@ -74,11 +74,11 @@ jobs:
       # Full history so the notes can diff against the previous tag. The release tag itself does
       # not exist yet, so the newest tag present is the previous release.
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Download Artifact (net8.0)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: net8.0
       - name: Compose release notes
