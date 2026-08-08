@@ -51,13 +51,23 @@ the `readwrite` role.
 | Early Download Limit | empty | Days before the release date that downloads are allowed |
 | Minimum Upload Speed | `0` | Hides peers slower than this, in MB/s. Decimals allowed (`0.2`). `0` shows everyone. |
 | Maximum Queue Length | `0` | Hides peers with more uploads already queued. `0` shows everyone. |
-| Allow Incomplete Releases | off | Offers folders with fewer audio files than the album has tracks |
+| Allow Incomplete Releases | off | Stops rejecting folders that hold fewer audio files than the album's shortest release. Nothing is hidden either way — see below |
 
-The peer filters default to off on purpose, and the reason is structural rather than a matter of
-taste. They drop responses inside the indexer, so a filtered peer never enters Lidarr's release list.
+Two checks are made on the audio file count of a folder. A folder holding fewer files than the
+album's shortest release is refused, because tracks that are absent cannot be filled in by anything
+and the import ends in `Has missing tracks` once the whole download has been transferred; **Allow
+Incomplete Releases** turns this one off. A folder holding more files than the longest release the
+import may map against is refused whatever that setting says, since the surplus belongs to no track —
+a pack of two records grabbed for one of them is the usual case.
+
+Neither check hides anything. A refused folder stays in interactive search with the reason written
+beside it and can still be grabbed by hand; what it loses is eligibility for automatic search. The
+same distinction governs the peer filters below, and the reason is structural rather than a matter of
+taste: they drop responses inside the indexer, so a filtered peer never enters Lidarr's release list.
 A release that *is* listed can always be forced, however badly it scores — grabbing one by hand posts
 it straight to the download client without consulting the decision specifications — whereas one that
-was filtered out has nothing left to force. Raise these only if you are drowning in unusable results.
+was filtered out has nothing left to force. Raise the filters only if you are drowning in unusable
+results.
 
 ## How it works
 
@@ -183,6 +193,15 @@ Test** option can correct them for you.
   30-track double album was. Unlike a rate-limit reply that one is never retried, and it is logged
   only at debug level, so the setting reads as active while nothing is looked up. Where the limit
   actually falls is untested.
+- **The file count checks let through folders that fit no release.** The lower bound is the shortest
+  release of the album, so an album pressed as 3, 25, 26 and 27 tracks accepts a folder of 24 files:
+  it clears 3 comfortably, downloads in full, and then fails on `Has missing tracks`, because the
+  release the import settles on is one of the long ones. Requiring the count to match a release
+  outright was measured over 13592 folders and refuses 27 % of everything currently accepted, most of
+  it a single file away from a real release. That trade is not obviously worth making, and it gets
+  worse the more obscure the music is: MusicBrainz lists the editions it knows, so for a rare record
+  "matches no release" says more about the catalogue than about the folder. The check stays loose on
+  purpose until there is evidence about which of those folders actually fail to import.
 - **Empty folders pile up in slskd's `incomplete` directory.** Its `retention.files.incomplete`
   setting is defined over files, deleting them once their last access time passes the configured age;
   the documentation says nothing about directories. Lowering it clears the stale files sooner but
