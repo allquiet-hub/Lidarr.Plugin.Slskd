@@ -162,8 +162,6 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                     .Select(f => f.AverageSpeed)
                     .DefaultIfEmpty(1)
                     .Average();
-                var message = $"Downloaded from user {group.Username}";
-
                 var (status, statusMessage) = FileProcessingUtils.GetQueuedFilesStatus(audioFiles);
 
                 // The queue only shows transfers that still exist: one aborted and then removed (or
@@ -177,10 +175,12 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                                     "the others were removed before completing";
                 }
 
-                if (statusMessage != null)
-                {
-                    message = statusMessage;
-                }
+                // Whatever the status says, Lidarr surfaces this field as the item's error and its UI
+                // paints any item carrying one as a failed download. It therefore travels only with a
+                // status that actually means something went wrong.
+                var message = status is DownloadItemStatus.Warning or DownloadItemStatus.Failed
+                    ? statusMessage
+                    : null;
 
                 var downloadClientItem = new DownloadClientItem
                 {
