@@ -97,30 +97,25 @@ namespace NzbDrone.Core.Indexers.Slskd
                 .Accept(HttpAccept.Json)
                 .SetHeader("X-API-Key", settings.ApiKey);
 
-        private static int GetMinimumTrackCount(AlbumSearchCriteria searchCriteria)
-        {
-            var albumReleases = searchCriteria.Albums.FirstOrDefault()?.AlbumReleases;
-            return albumReleases?.Value?.Any() == true
-                ? albumReleases.Value.Min(r => r.TrackCount)
-                : 0;
-        }
-
         /// <summary>
-        /// The largest track count among the releases the import is allowed to map against — the
-        /// monitored one, or any of them when the album accepts any release. A folder with more audio
-        /// files than this cannot import cleanly: the surplus files map to nothing.
+        /// The releases the import is allowed to map against — the monitored one, or any of them when
+        /// the album accepts any release. Both file count bounds come from this same set: a folder
+        /// with more audio files than the largest cannot import cleanly since the surplus maps to
+        /// nothing, and one with fewer than the smallest is missing tracks no eligible edition can
+        /// forgive. Bounding the minimum over all releases instead would let a user who pins a single
+        /// edition still receive folders sized to the editions they excluded.
         /// </summary>
-        private static int GetMaximumTrackCount(AlbumSearchCriteria searchCriteria)
+        private static List<Core.Music.AlbumRelease> GetEligibleReleases(AlbumSearchCriteria searchCriteria)
         {
             var album = searchCriteria.Albums.FirstOrDefault();
             var releases = album?.AlbumReleases?.Value;
             if (releases == null || !releases.Any())
             {
-                return 0;
+                return new List<Core.Music.AlbumRelease>();
             }
 
             var eligible = releases.Where(r => r.Monitored || album.AnyReleaseOk).ToList();
-            return (eligible.Any() ? eligible : releases).Max(r => r.TrackCount);
+            return eligible.Any() ? eligible : releases;
         }
 
         private static bool IsVariousArtist(Core.Music.Artist artist) =>
@@ -158,8 +153,9 @@ namespace NzbDrone.Core.Indexers.Slskd
             _logger.Debug("Creating search request for album: {0}", searchCriteria.AlbumQuery);
 
             var chain = new IndexerPageableRequestChain();
-            var minimumTrackCount = GetMinimumTrackCount(searchCriteria);
-            var maximumTrackCount = GetMaximumTrackCount(searchCriteria);
+            var eligibleReleases = GetEligibleReleases(searchCriteria);
+            var minimumTrackCount = eligibleReleases.Any() ? eligibleReleases.Min(r => r.TrackCount) : 0;
+            var maximumTrackCount = eligibleReleases.Any() ? eligibleReleases.Max(r => r.TrackCount) : 0;
 
             // Every tier is a full slskd search that has to run to completion, so the chain is kept as
             // short as possible: Lidarr stops at the first tier that yields anything. Queries that
