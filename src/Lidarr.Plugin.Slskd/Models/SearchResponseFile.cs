@@ -14,9 +14,6 @@ public class SearchResponseFile : SlskdFile
     [JsonProperty("code")]
     public int Code { get; set; }
 
-    [JsonProperty("length")]
-    public int Length { get; set; }
-
     [JsonProperty("isLocked")]
     public bool? IsLocked { get; set; }
 }

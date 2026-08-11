@@ -42,6 +42,12 @@ public class SlskdFile
     [JsonProperty("size")]
     public long Size { get; set; }
 
+    /// <summary>
+    /// Playback duration in seconds, from the Soulseek file attributes the sharing client reports.
+    /// </summary>
+    [JsonProperty("length")]
+    public int? Length { get; set; }
+
     [JsonProperty("bitDepth")]
     public int? BitDepth { get; set; }
 

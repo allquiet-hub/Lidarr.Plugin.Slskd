@@ -52,6 +52,7 @@ the `readwrite` role.
 | Minimum Upload Speed | `0` | Hides peers slower than this, in MB/s. Decimals allowed (`0.2`). `0` shows everyone. |
 | Maximum Queue Length | `0` | Hides peers with more uploads already queued. `0` shows everyone. |
 | Allow Incomplete Releases | off | Stops rejecting folders that hold fewer audio files than the album's shortest release. Nothing is hidden either way — see below |
+| Verify Track Durations | on | Rejects folders whose file durations fit no edition of the album — typically radio shows, live sets or re-edits sharing the album's name. See below |
 
 Two checks are made on the audio file count of a folder. A folder holding fewer files than the
 album's shortest release is refused, because tracks that are absent cannot be filled in by anything
@@ -60,7 +61,16 @@ Incomplete Releases** turns this one off. A folder holding more files than the l
 import may map against is refused whatever that setting says, since the surplus belongs to no track —
 a pack of two records grabbed for one of them is the usual case.
 
-Neither check hides anything. A refused folder stays in interactive search with the reason written
+A third check reads the playback durations peers report for their files — Soulseek clients send one
+per audio file — and maps them against the album's track lengths on MusicBrainz. A folder that
+carries the album's name but holds different recordings maps badly: measured on a real case, true
+copies of a 17-track album matched 17 of 17 track lengths within 5 seconds while a radio show named
+after the album matched 8 to 11. Folders below the bar are rejected before they can waste a
+download; folders or editions without duration data are given the benefit of the doubt. **Verify
+Track Durations** turns this off. What durations cannot see is tags: a folder holding the right
+recordings from a differently-tagged edition passes here and can still be refused by the import.
+
+None of these checks hides anything. A refused folder stays in interactive search with the reason written
 beside it and can still be grabbed by hand; what it loses is eligibility for automatic search. The
 same distinction governs the peer filters below, and the reason is structural rather than a matter of
 taste: they drop responses inside the indexer, so a filtered peer never enters Lidarr's release list.

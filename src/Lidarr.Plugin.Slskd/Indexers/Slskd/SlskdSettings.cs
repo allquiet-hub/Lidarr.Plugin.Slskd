@@ -41,6 +41,9 @@ namespace NzbDrone.Core.Indexers.Slskd
         [FieldDefinition(6, Type = FieldType.Checkbox, Label = "Allow Incomplete Releases", HelpText = "Stop rejecting results with fewer audio files than the album has tracks. Either way nothing is hidden: a rejected result still appears in interactive search with its reason and can still be grabbed by hand. Off, it is only kept out of automatic grabs, where it would download in full and then fail to import", Advanced = true)]
         public bool AllowIncompleteReleases { get; set; }
 
+        [FieldDefinition(7, Type = FieldType.Checkbox, Label = "Verify Track Durations", HelpText = "Compare the durations peers report for their files against the album's track lengths on MusicBrainz, and reject folders whose durations fit no edition of the album — typically radio shows, live sets or re-edits that would download in full and then fail to import. Rejected results stay visible in interactive search with the reason and can still be grabbed by hand", Advanced = true)]
+        public bool VerifyDurations { get; set; } = true;
+
         public NzbDroneValidationResult Validate()
         {
             return new NzbDroneValidationResult(Validator.Validate(this));

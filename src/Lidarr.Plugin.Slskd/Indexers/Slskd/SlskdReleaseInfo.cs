@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using NzbDrone.Core.Parser.Model;
 
 namespace NzbDrone.Core.Indexers.Slskd
@@ -31,5 +32,12 @@ namespace NzbDrone.Core.Indexers.Slskd
         /// The largest track count among the releases the import may map against, or 0 when unknown.
         /// </summary>
         public int MaximumTrackCount { get; set; }
+
+        /// <summary>
+        /// Playback duration in seconds of each audio file in the folder, as reported by the sharing
+        /// peer. Null when the duration check is disabled; entries of 0 are files the peer reported
+        /// no duration for.
+        /// </summary>
+        public IReadOnlyList<int> FileDurations { get; set; }
     }
 }

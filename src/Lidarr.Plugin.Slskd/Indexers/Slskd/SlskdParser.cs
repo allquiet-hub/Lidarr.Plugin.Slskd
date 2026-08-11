@@ -565,6 +565,9 @@ namespace NzbDrone.Core.Indexers.Slskd
                 AudioFileCount = audioFiles.Count,
                 ExpectedTrackCount = expectedTrackCount,
                 MaximumTrackCount = maximumTrackCount,
+                FileDurations = _settings.VerifyDurations
+                    ? audioFiles.Select(f => Math.Max(0, f.Length ?? 0)).ToList()
+                    : null,
                 Guid = identifier,
                 Title = EnsureMappableTitle(
                     FileProcessingUtils.BuildTitle(audioFiles) + DescribePeer(response),
