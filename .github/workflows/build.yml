@@ -113,18 +113,24 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: v${{ env.PLUGIN_VERSION }}
         run: |
-          # A draft left by an earlier push of this same version is replaced rather than duplicated,
-          # since pushing to main repeatedly before publishing is the normal way to work. A release
-          # that is already published is never touched: reaching it means the version was not bumped,
-          # and the build should say so instead of quietly replacing something users can see.
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = "true" ]; then
-              gh release delete "$TAG" --yes
+          # Drafts left by earlier pushes of this same version are replaced rather than duplicated,
+          # since pushing to main repeatedly before publishing is the normal way to work. They are
+          # found by filtering the release list on tag_name: a draft owns no git tag yet, so any
+          # tag-based lookup resolves it unreliably — including gh release view, which is what makes
+          # its isDraft answer untrustworthy here. A release that is already published is never
+          # touched: reaching it means the version was not bumped, and the build should say so
+          # instead of quietly replacing something users can see.
+          gh api "repos/${{ github.repository }}/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$TAG\") | \"\(.id) \(.draft)\"" |
+          while read -r id draft; do
+            if [ "$draft" = "true" ]; then
+              echo "Replacing stale draft $id"
+              gh api -X DELETE "repos/${{ github.repository }}/releases/$id"
             else
               echo "::error::$TAG is already published. Bump PLUGIN_VERSION before pushing."
               exit 1
             fi
-          fi
+          done
 
           # --target names a branch rather than a sha on purpose: Lidarr only offers an update when
           # the release points at a branch called main or master, a sha reads to it as an unknown
