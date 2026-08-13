@@ -120,15 +120,17 @@ jobs:
           # its isDraft answer untrustworthy here. A release that is already published is never
           # touched: reaching it means the version was not bumped, and the build should say so
           # instead of quietly replacing something users can see.
-          echo "Releases visible to this token:"
-          gh api "repos/${{ github.repository }}/releases?per_page=100" \
-            --jq ".[] | \"  id=\(.id) tag=\(.tag_name) draft=\(.draft) name=\(.name)\""
-
           gh api "repos/${{ github.repository }}/releases?per_page=100" \
             --jq ".[] | select(.tag_name == \"$TAG\") | \"\(.id) \(.draft)\"" |
           while read -r id draft; do
             if [ "$draft" = "true" ]; then
               echo "Replacing stale draft $id"
+              gh api -X DELETE "repos/${{ github.repository }}/releases/$id"
+            elif ! gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --silent 2>/dev/null; then
+              # Published in name only: a release whose tag was never created is the remnant of a
+              # create or publish that failed halfway, and without a tag no user can ever have seen
+              # or installed it. A release that truly went out always owns its tag.
+              echo "Replacing tagless release $id left by a failed publish"
               gh api -X DELETE "repos/${{ github.repository }}/releases/$id"
             else
               echo "::error::$TAG is already published. Bump PLUGIN_VERSION before pushing."
