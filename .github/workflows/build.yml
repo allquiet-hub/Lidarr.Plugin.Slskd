@@ -120,6 +120,10 @@ jobs:
           # its isDraft answer untrustworthy here. A release that is already published is never
           # touched: reaching it means the version was not bumped, and the build should say so
           # instead of quietly replacing something users can see.
+          echo "Releases visible to this token:"
+          gh api "repos/${{ github.repository }}/releases?per_page=100" \
+            --jq ".[] | \"  id=\(.id) tag=\(.tag_name) draft=\(.draft) name=\(.name)\""
+
           gh api "repos/${{ github.repository }}/releases?per_page=100" \
             --jq ".[] | select(.tag_name == \"$TAG\") | \"\(.id) \(.draft)\"" |
           while read -r id draft; do
