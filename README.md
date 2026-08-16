@@ -53,6 +53,7 @@ the `readwrite` role.
 | Maximum Queue Length | `0` | Hides peers with more uploads already queued. `0` shows everyone. |
 | Allow Incomplete Releases | off | Stops rejecting folders that hold fewer audio files than the album's shortest release. Nothing is hidden either way — see below |
 | Verify Track Durations | on | Rejects folders whose file durations fit no edition of the album — typically radio shows, live sets or re-edits sharing the album's name. See below |
+| External URL | empty | Optional slskd URL used only for the links shown in interactive search, for setups where the API URL is internal-only (e.g. a Docker service name). Empty uses the URL above |
 
 Two checks are made on the audio file count of a folder. A folder holding fewer files than the
 album's shortest release is refused, because tracks that are absent cannot be filled in by anything

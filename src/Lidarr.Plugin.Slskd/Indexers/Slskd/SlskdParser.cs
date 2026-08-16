@@ -575,7 +575,7 @@ namespace NzbDrone.Core.Indexers.Slskd
                     albumTitle,
                     albumYear),
                 DownloadUrl = downloadPath,
-                InfoUrl = $"{_settings.BaseUrl}searches/{searchId}",
+                InfoUrl = BuildSearchLink(searchId),
                 Size = totalSize,
 
                 // Soulseek search results carry no date, so the only truthful publish date is the moment
@@ -609,6 +609,22 @@ namespace NzbDrone.Core.Indexers.Slskd
             return response.QueueLength > 0
                 ? $" [{speed}, queued behind {response.QueueLength}]"
                 : $" [{speed}]";
+        }
+
+        /// <summary>
+        /// Builds the link a release carries into interactive search, pointing at the slskd search it
+        /// came from. The link is meant for the user's browser rather than for Lidarr, so it prefers
+        /// the external URL when one is configured: the API URL may only resolve inside the network,
+        /// as with a Docker service name. Trailing slashes are normalised because this is the one
+        /// place a URL is assembled by hand instead of through HttpRequestBuilder.
+        /// </summary>
+        private string BuildSearchLink(string searchId)
+        {
+            var baseUrl = _settings.ExternalUrl.IsNullOrWhiteSpace()
+                ? _settings.BaseUrl
+                : _settings.ExternalUrl;
+
+            return $"{baseUrl?.TrimEnd('/')}/searches/{searchId}";
         }
     }
 }

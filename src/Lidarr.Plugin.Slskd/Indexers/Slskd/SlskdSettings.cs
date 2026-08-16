@@ -10,6 +10,7 @@ namespace NzbDrone.Core.Indexers.Slskd
         public SlskdIndexerSettingsValidator()
         {
             RuleFor(c => c.BaseUrl).ValidRootUrl();
+            RuleFor(c => c.ExternalUrl).ValidRootUrl().When(c => !string.IsNullOrWhiteSpace(c.ExternalUrl));
             RuleFor(c => c.ApiKey).NotEmpty();
             RuleFor(c => c.MinimumPeerUploadSpeed).GreaterThanOrEqualTo(0);
             RuleFor(c => c.MaximumPeerQueueLength).GreaterThanOrEqualTo(0);
@@ -43,6 +44,9 @@ namespace NzbDrone.Core.Indexers.Slskd
 
         [FieldDefinition(7, Type = FieldType.Checkbox, Label = "Verify Track Durations", HelpText = "Compare the durations peers report for their files against the album's track lengths on MusicBrainz, and reject folders whose durations fit no edition of the album — typically radio shows, live sets or re-edits that would download in full and then fail to import. Rejected results stay visible in interactive search with the reason and can still be grabbed by hand", Advanced = true)]
         public bool VerifyDurations { get; set; } = true;
+
+        [FieldDefinition(8, Label = "External URL", HelpText = "Optional slskd URL to use when building the links shown in interactive search, for setups where the URL above is only reachable from inside the network, such as a Docker service name. Never used for API calls. Empty uses the URL above", Advanced = true)]
+        public string ExternalUrl { get; set; } = "";
 
         public NzbDroneValidationResult Validate()
         {
