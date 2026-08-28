@@ -14,6 +14,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             RuleFor(c => c.ApiKey).NotEmpty();
             RuleFor(c => c.MinimumPeerUploadSpeed).GreaterThanOrEqualTo(0);
             RuleFor(c => c.MaximumPeerQueueLength).GreaterThanOrEqualTo(0);
+            RuleFor(c => c.ArtistSearchAlbumLimit).GreaterThanOrEqualTo(0);
         }
     }
 
@@ -47,6 +48,9 @@ namespace NzbDrone.Core.Indexers.Slskd
 
         [FieldDefinition(8, Label = "External URL", HelpText = "Optional slskd URL to use when building the links shown in interactive search, for setups where the URL above is only reachable from inside the network, such as a Docker service name. Never used for API calls. Empty uses the URL above", Advanced = true)]
         public string ExternalUrl { get; set; } = "";
+
+        [FieldDefinition(9, Type = FieldType.Number, Label = "Artist Search Album Limit", HelpText = "How many albums a search started from an artist page may look for. Such a search covers every monitored album, each one its own Soulseek search running after the last, so a large discography turns into minutes of searching and a burst of queries the server counts against the account. Albums past the limit are skipped and logged, and can still be searched from their own page. 0 searches them all", Advanced = true)]
+        public int ArtistSearchAlbumLimit { get; set; } = 20;
 
         public NzbDroneValidationResult Validate()
         {

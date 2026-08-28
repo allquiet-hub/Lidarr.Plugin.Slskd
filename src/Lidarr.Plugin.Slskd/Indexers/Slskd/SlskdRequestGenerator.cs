@@ -105,9 +105,8 @@ namespace NzbDrone.Core.Indexers.Slskd
         /// forgive. Bounding the minimum over all releases instead would let a user who pins a single
         /// edition still receive folders sized to the editions they excluded.
         /// </summary>
-        private static List<Core.Music.AlbumRelease> GetEligibleReleases(AlbumSearchCriteria searchCriteria)
+        private static List<Core.Music.AlbumRelease> GetEligibleReleases(Core.Music.Album album)
         {
-            var album = searchCriteria.Albums.FirstOrDefault();
             var releases = album?.AlbumReleases?.Value;
             if (releases == null || !releases.Any())
             {
@@ -153,7 +152,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             _logger.Debug("Creating search request for album: {0}", searchCriteria.AlbumQuery);
 
             var chain = new IndexerPageableRequestChain();
-            var eligibleReleases = GetEligibleReleases(searchCriteria);
+            var eligibleReleases = GetEligibleReleases(searchCriteria.Albums?.FirstOrDefault());
             var minimumTrackCount = eligibleReleases.Any() ? eligibleReleases.Min(r => r.TrackCount) : 0;
             var maximumTrackCount = eligibleReleases.Any() ? eligibleReleases.Max(r => r.TrackCount) : 0;
 
@@ -294,9 +293,128 @@ namespace NzbDrone.Core.Indexers.Slskd
         private static int WordCount(string value) =>
             value.IsNullOrWhiteSpace() ? 0 : value.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
 
+        /// <summary>
+        /// A search started from an artist page, which Lidarr hands over as one criteria carrying every
+        /// monitored album of that artist. It is answered by searching for each of those albums in turn,
+        /// with the same queries their own search would use: Soulseek matches terms anywhere along a
+        /// path, so a query naming only the artist returns whatever of theirs is most shared - remixes,
+        /// DJ sets, single tracks - and nothing ties any of it back to the album it belongs to, since
+        /// the folder names Soulseek carries almost never parse into one.
+        ///
+        /// Every query lives in a single tier because Lidarr stops at the first tier that yields
+        /// anything: spread over tiers, one album finding something would leave the rest unsearched.
+        /// That costs the fallback tiers an album search would go on to try, which is the trade this
+        /// search makes anyway - it covers a discography, while searching an album on its own remains
+        /// the thorough path.
+        /// </summary>
         public IndexerPageableRequestChain GetSearchRequests(ArtistSearchCriteria searchCriteria)
         {
-            return new IndexerPageableRequestChain();
+            if (searchCriteria == null)
+            {
+                throw new ArgumentNullException(nameof(searchCriteria));
+            }
+
+            var chain = new IndexerPageableRequestChain();
+
+            // Ordered newest first so that the limit below always falls in the same place, rather than
+            // wherever the albums happen to arrive in
+            var monitored = (searchCriteria.Albums ?? new List<Core.Music.Album>())
+                .OrderByDescending(a => a.ReleaseDate ?? DateTime.MinValue)
+                .ToList();
+
+            var albums = Settings.ArtistSearchAlbumLimit > 0
+                ? monitored.Take(Settings.ArtistSearchAlbumLimit).ToList()
+                : monitored;
+
+            // Each album is a search of its own that runs after the last one finishes, so the count is
+            // both how long this takes and how many queries the account spends
+            if (albums.Count < monitored.Count)
+            {
+                _logger.Warn(
+                    "Searching {0} of the {1} monitored albums of {2}, the artist search album limit leaves the remaining {3} out. They can still be searched from their own page",
+                    albums.Count,
+                    monitored.Count,
+                    searchCriteria.Artist?.Name,
+                    monitored.Count - albums.Count);
+            }
+
+            _logger.Debug("Creating search request for {0} albums of artist: {1}", albums.Count, searchCriteria.Artist?.Name);
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var first = true;
+
+            foreach (var album in albums)
+            {
+                // The album's own queries, built from a criteria filled the way Lidarr fills it for an
+                // album search, so that reaching an album through either search asks the same thing
+                var queries = BuildQueryTiers(BuildAlbumCriteria(searchCriteria, album)).FirstOrDefault();
+                if (queries == null)
+                {
+                    continue;
+                }
+
+                var eligibleReleases = GetEligibleReleases(album);
+                var minimumTrackCount = eligibleReleases.Any() ? eligibleReleases.Min(r => r.TrackCount) : 0;
+                var maximumTrackCount = eligibleReleases.Any() ? eligibleReleases.Max(r => r.TrackCount) : 0;
+
+                foreach (var query in queries)
+                {
+                    // Two albums sharing a title, such as an album and its deluxe edition, would
+                    // otherwise be searched for twice over
+                    if (!seen.Add(query))
+                    {
+                        continue;
+                    }
+
+                    _logger.Debug("Adding search query: {0}", query);
+
+                    var requests = GetRequests(
+                        query,
+                        trackCount: minimumTrackCount,
+                        maximumTrackCount: maximumTrackCount,
+                        artistName: searchCriteria.Artist?.Name,
+                        albumTitle: album.Title,
+                        albumYear: album.ReleaseDate?.Year ?? 0);
+
+                    if (first)
+                    {
+                        chain.AddTier(requests);
+                        first = false;
+                    }
+                    else
+                    {
+                        chain.Add(requests);
+                    }
+                }
+            }
+
+            return chain;
+        }
+
+        /// <summary>
+        /// Mirrors how Lidarr builds the criteria for a search of a single album, so that the queries an
+        /// artist search asks for an album are the ones that album's own search would have asked for.
+        /// </summary>
+        private static AlbumSearchCriteria BuildAlbumCriteria(ArtistSearchCriteria searchCriteria, Core.Music.Album album)
+        {
+            var criteria = new AlbumSearchCriteria
+            {
+                Artist = searchCriteria.Artist,
+                Albums = new List<Core.Music.Album> { album },
+                AlbumTitle = album.Title
+            };
+
+            if (album.ReleaseDate.HasValue)
+            {
+                criteria.AlbumYear = album.ReleaseDate.Value.Year;
+            }
+
+            if (album.Disambiguation.IsNotNullOrWhiteSpace())
+            {
+                criteria.Disambiguation = album.Disambiguation;
+            }
+
+            return criteria;
         }
 
         private IEnumerable<IndexerRequest> GetRequests(string searchParameters, int? searchTimeout = null, double? uploadSpeed = null, int trackCount = 0, int maximumTrackCount = 0, string artistName = null, string albumTitle = null, int albumYear = 0)
