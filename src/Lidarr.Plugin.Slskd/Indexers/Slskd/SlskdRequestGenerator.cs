@@ -306,6 +306,12 @@ namespace NzbDrone.Core.Indexers.Slskd
         /// That costs the fallback tiers an album search would go on to try, which is the trade this
         /// search makes anyway - it covers a discography, while searching an album on its own remains
         /// the thorough path.
+        ///
+        /// Only the albums still missing audio are searched. Lidarr asks for every monitored album,
+        /// complete ones included, and searching those spends the album limit on records already on
+        /// disk - on a large discography pushing the ones actually missing out of the search entirely.
+        /// An album that is complete but below its quality cutoff is therefore not searched from here,
+        /// and remains searchable from its own page.
         /// </summary>
         public IndexerPageableRequestChain GetSearchRequests(ArtistSearchCriteria searchCriteria)
         {
@@ -315,30 +321,37 @@ namespace NzbDrone.Core.Indexers.Slskd
             }
 
             var chain = new IndexerPageableRequestChain();
+            var monitored = searchCriteria.Albums ?? new List<Core.Music.Album>();
 
             // Ordered newest first so that the limit below always falls in the same place, rather than
             // wherever the albums happen to arrive in
-            var monitored = (searchCriteria.Albums ?? new List<Core.Music.Album>())
+            var incomplete = monitored
+                .Where(IsMissingTracks)
                 .OrderByDescending(a => a.ReleaseDate ?? DateTime.MinValue)
                 .ToList();
 
             var albums = Settings.ArtistSearchAlbumLimit > 0
-                ? monitored.Take(Settings.ArtistSearchAlbumLimit).ToList()
-                : monitored;
+                ? incomplete.Take(Settings.ArtistSearchAlbumLimit).ToList()
+                : incomplete;
 
             // Each album is a search of its own that runs after the last one finishes, so the count is
             // both how long this takes and how many queries the account spends
-            if (albums.Count < monitored.Count)
+            if (albums.Count < incomplete.Count)
             {
                 _logger.Warn(
-                    "Searching {0} of the {1} monitored albums of {2}, the artist search album limit leaves the remaining {3} out. They can still be searched from their own page",
+                    "Searching {0} of the {1} albums of {2} that are missing tracks, the artist search album limit leaves the remaining {3} out. They can still be searched from their own page",
                     albums.Count,
-                    monitored.Count,
+                    incomplete.Count,
                     searchCriteria.Artist?.Name,
-                    monitored.Count - albums.Count);
+                    incomplete.Count - albums.Count);
             }
 
-            _logger.Debug("Creating search request for {0} albums of artist: {1}", albums.Count, searchCriteria.Artist?.Name);
+            _logger.Debug(
+                "Creating search request for artist {0}: {1} monitored albums, {2} missing tracks, {3} searched",
+                searchCriteria.Artist?.Name,
+                monitored.Count,
+                incomplete.Count,
+                albums.Count);
 
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var first = true;
@@ -389,6 +402,25 @@ namespace NzbDrone.Core.Indexers.Slskd
             }
 
             return chain;
+        }
+
+        /// <summary>
+        /// Whether the album is still missing audio, following the same rule Lidarr lists an album as
+        /// missing by: the release it monitors holds at least one track no file is attached to. Only
+        /// that release is looked at, since files hang off its tracks alone - measuring against every
+        /// release would call each album missing, the editions not being imported into having no files
+        /// by definition.
+        ///
+        /// An album whose releases or tracks cannot be read is treated as missing and searched for: a
+        /// search that turns out to be unnecessary costs one query, while an album wrongly left out
+        /// costs the download.
+        /// </summary>
+        private static bool IsMissingTracks(Core.Music.Album album)
+        {
+            var monitoredRelease = album?.AlbumReleases?.Value?.FirstOrDefault(r => r.Monitored);
+            var tracks = monitoredRelease?.Tracks?.Value;
+
+            return tracks == null || tracks.Count == 0 || tracks.Any(t => !t.HasFile);
         }
 
         /// <summary>
