@@ -97,7 +97,8 @@ only when the one before it came back empty:
    either form alone finds only half the copies
 2. the album title on its own, which is the only way to find a record whose artist the Soulseek
    server refuses to answer for. Titles of a single word are excluded, and so are singles, whose
-   title is a song's: either returns thousands of folders with nothing to do with the record
+   title is a song's: either returns thousands of folders with nothing to do with the record. A
+   result of this step whose path never names the artist is rejected, and stays grabbable by hand
 3. one artist alias, if MusicBrainz lists a usable one
 
 An album therefore costs between one and four searches. That is worth knowing, because the Soulseek

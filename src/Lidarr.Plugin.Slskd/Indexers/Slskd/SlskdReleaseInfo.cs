@@ -39,5 +39,11 @@ namespace NzbDrone.Core.Indexers.Slskd
         /// no duration for.
         /// </summary>
         public IReadOnlyList<int> FileDurations { get; set; }
+
+        /// <summary>
+        /// The release was found by a query that left the artist out, and nothing in its folder or file
+        /// names mentions the artist either, so no part of it says whose record it is.
+        /// </summary>
+        public bool ArtistMissingFromPath { get; set; }
     }
 }
