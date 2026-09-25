@@ -59,6 +59,9 @@ public static class FileProcessingUtils
     private static readonly Regex DriveLetterPattern = new (@"^[a-z]:$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex WordPattern = new (@"[\p{L}\p{Nd}]+", RegexOptions.Compiled);
     private static readonly Regex LetterRunPattern = new (@"[^\p{L}\s]", RegexOptions.Compiled);
+    private static readonly Regex FormatFolderPattern = new (
+        @"^(" + string.Join("|", ValidAudioExtensions) + @")\d*(?!\p{L})",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     // Matched as prefixes against the letters of a folder name, so "Music99", "musics" and
     // "MusicLibrary" are all recognised as collection folders rather than artist names.
@@ -284,10 +287,14 @@ public static class FileProcessingUtils
         !string.IsNullOrWhiteSpace(name) &&
         WordPattern.Matches(name).Any(m => ValidAudioExtensions.Contains(m.Value.ToLowerInvariant()));
 
+    /// <summary>
+    /// A folder named after its format ("FLAC", "FLAC 24bit", "MP3-320", "flac24"). The format has to
+    /// be a word of its own: matched as a bare prefix it also swallowed every album and artist whose
+    /// name merely starts with one, "Waves" and "Wavelength" with wav, "Aperture" with ape, leaving a
+    /// title with nothing in it Lidarr could map.
+    /// </summary>
     private static bool IsAudioExtension(string s) =>
-        ValidAudioExtensions.Any(ext =>
-            s.Equals(ext, StringComparison.OrdinalIgnoreCase) ||
-            s.StartsWith(ext, StringComparison.OrdinalIgnoreCase));
+        FormatFolderPattern.IsMatch(s);
 
     public static void CombineFilesWithMetadata(List<DirectoryFile> files, List<SearchResponseFile> metadataFiles)
     {
