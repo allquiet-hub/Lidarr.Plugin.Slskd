@@ -117,6 +117,14 @@ namespace NzbDrone.Core.Indexers.Slskd
             return eligible.Any() ? eligible : releases;
         }
 
+        private static (int Minimum, int Maximum) GetTrackCountBounds(Core.Music.Album album)
+        {
+            var eligibleReleases = GetEligibleReleases(album);
+            return eligibleReleases.Any()
+                ? (eligibleReleases.Min(r => r.TrackCount), eligibleReleases.Max(r => r.TrackCount))
+                : (0, 0);
+        }
+
         private static bool IsVariousArtist(Core.Music.Artist artist) =>
             VariousArtistIds.Contains(artist.ForeignArtistId) ||
             VariousArtistNames.Contains(artist.Name);
@@ -152,9 +160,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             _logger.Debug("Creating search request for album: {0}", searchCriteria.AlbumQuery);
 
             var chain = new IndexerPageableRequestChain();
-            var eligibleReleases = GetEligibleReleases(searchCriteria.Albums?.FirstOrDefault());
-            var minimumTrackCount = eligibleReleases.Any() ? eligibleReleases.Min(r => r.TrackCount) : 0;
-            var maximumTrackCount = eligibleReleases.Any() ? eligibleReleases.Max(r => r.TrackCount) : 0;
+            var (minimumTrackCount, maximumTrackCount) = GetTrackCountBounds(searchCriteria.Albums?.FirstOrDefault());
 
             // Every tier is a full slskd search that has to run to completion, so the chain is kept as
             // short as possible: Lidarr stops at the first tier that yields anything. Queries that
@@ -301,11 +307,13 @@ namespace NzbDrone.Core.Indexers.Slskd
         /// DJ sets, single tracks - and nothing ties any of it back to the album it belongs to, since
         /// the folder names Soulseek carries almost never parse into one.
         ///
-        /// Every query lives in a single tier because Lidarr stops at the first tier that yields
-        /// anything: spread over tiers, one album finding something would leave the rest unsearched.
-        /// That costs the fallback tiers an album search would go on to try, which is the trade this
-        /// search makes anyway - it covers a discography, while searching an album on its own remains
-        /// the thorough path.
+        /// Each album keeps its whole fallback ladder, laid out by level: the first tier holds every
+        /// album's main queries, the second every album's fallback, and so on. Lidarr's own rule, to
+        /// stop at the first tier that yields anything, would silence every album the moment one of
+        /// them found something, so the requests carry the albums they search for and the fetch drops
+        /// an album's later tiers once it has results of its own. An album found on the first tier
+        /// costs what it did in an album search; one found nowhere costs its whole ladder, as it would
+        /// have from its own page.
         ///
         /// Only the albums still missing audio are searched. Lidarr asks for every monitored album,
         /// complete ones included, and searching those spends the album limit on records already on
@@ -353,41 +361,56 @@ namespace NzbDrone.Core.Indexers.Slskd
                 incomplete.Count,
                 albums.Count);
 
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var first = true;
+            var levels = new List<List<ArtistSearchQuery>>();
+            var byText = new Dictionary<string, ArtistSearchQuery>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var album in albums)
             {
-                // The album's own queries, built from a criteria filled the way Lidarr fills it for an
+                // The album's own tiers, built from a criteria filled the way Lidarr fills it for an
                 // album search, so that reaching an album through either search asks the same thing
-                var queries = BuildQueryTiers(BuildAlbumCriteria(searchCriteria, album)).FirstOrDefault();
-                if (queries == null)
-                {
-                    continue;
-                }
+                var tiers = BuildQueryTiers(BuildAlbumCriteria(searchCriteria, album)).ToList();
 
-                var eligibleReleases = GetEligibleReleases(album);
-                var minimumTrackCount = eligibleReleases.Any() ? eligibleReleases.Min(r => r.TrackCount) : 0;
-                var maximumTrackCount = eligibleReleases.Any() ? eligibleReleases.Max(r => r.TrackCount) : 0;
-
-                foreach (var query in queries)
+                for (var level = 0; level < tiers.Count; level++)
                 {
-                    // Two albums sharing a title, such as an album and its deluxe edition, would
-                    // otherwise be searched for twice over
-                    if (!seen.Add(query))
+                    foreach (var text in tiers[level])
                     {
-                        continue;
+                        // Two albums sharing a title, such as an album and a reissue, would otherwise
+                        // be searched for twice over; the one search answers for both instead
+                        if (byText.TryGetValue(text, out var shared))
+                        {
+                            shared.AlbumIds.Add(album.Id);
+                            continue;
+                        }
+
+                        if (levels.Count == level)
+                        {
+                            levels.Add(new List<ArtistSearchQuery>());
+                        }
+
+                        var query = new ArtistSearchQuery(text, album);
+                        levels[level].Add(query);
+                        byText.Add(text, query);
                     }
+                }
+            }
 
-                    _logger.Debug("Adding search query: {0}", query);
+            foreach (var level in levels)
+            {
+                var first = true;
 
+                foreach (var query in level)
+                {
+                    _logger.Debug("Adding search query: {0}", query.Text);
+
+                    var (minimumTrackCount, maximumTrackCount) = GetTrackCountBounds(query.Album);
                     var requests = GetRequests(
-                        query,
+                        query.Text,
                         trackCount: minimumTrackCount,
                         maximumTrackCount: maximumTrackCount,
                         artistName: searchCriteria.Artist?.Name,
-                        albumTitle: album.Title,
-                        albumYear: album.ReleaseDate?.Year ?? 0);
+                        albumTitle: query.Album.Title,
+                        albumYear: query.Album.ReleaseDate?.Year ?? 0,
+                        albumIds: query.AlbumIds);
 
                     if (first)
                     {
@@ -449,7 +472,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             return criteria;
         }
 
-        private IEnumerable<IndexerRequest> GetRequests(string searchParameters, int? searchTimeout = null, double? uploadSpeed = null, int trackCount = 0, int maximumTrackCount = 0, string artistName = null, string albumTitle = null, int albumYear = 0)
+        private IEnumerable<IndexerRequest> GetRequests(string searchParameters, int? searchTimeout = null, double? uploadSpeed = null, int trackCount = 0, int maximumTrackCount = 0, string artistName = null, string albumTitle = null, int albumYear = 0, IReadOnlyCollection<int> albumIds = null)
         {
             _logger.Debug(CultureInfo.InvariantCulture,
                 "Creating search request - Parameters: {0}, Timeout: {1}, Upload Speed: {2}, Track Count: {3}",
@@ -464,7 +487,7 @@ namespace NzbDrone.Core.Indexers.Slskd
                 uploadSpeed ?? Settings.MinimumPeerUploadSpeed);
 
             var request = BuildSearchRequest(searchRequest, trackCount, maximumTrackCount, artistName, albumTitle, albumYear);
-            yield return new IndexerRequest(request);
+            yield return new SlskdIndexerRequest(request, albumIds);
         }
 
         private SearchRequest CreateSearchRequest(string searchText, int searchTimeout, double uploadSpeed)
@@ -540,6 +563,24 @@ namespace NzbDrone.Core.Indexers.Slskd
             }
 
             return request;
+        }
+
+        /// <summary>
+        /// One query of an artist search, owned by the album that asked it first. The parser headers
+        /// describe that album alone, since a response cannot be told apart by which album it answers.
+        /// </summary>
+        private sealed class ArtistSearchQuery
+        {
+            public ArtistSearchQuery(string text, Core.Music.Album album)
+            {
+                Text = text;
+                Album = album;
+                AlbumIds = new HashSet<int> { album.Id };
+            }
+
+            public string Text { get; }
+            public Core.Music.Album Album { get; }
+            public HashSet<int> AlbumIds { get; }
         }
     }
 }
