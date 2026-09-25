@@ -95,6 +95,12 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 // release without holding the indexer responsible for an unreachable peer
                 throw new ReleaseUnavailableException(release, ex.Message, ex);
             }
+            catch (SlskdEnqueueRefusedException ex)
+            {
+                // Rejected rather than grabbed: nothing would ever arrive under this download, and a
+                // grab Lidarr believed in would sit in history without a queue item to follow
+                throw new DownloadClientRejectedReleaseException(release, ex.Message, ex);
+            }
         }
 
         public override DownloadClientInfo GetStatus()
