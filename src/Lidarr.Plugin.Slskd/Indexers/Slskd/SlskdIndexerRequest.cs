@@ -14,14 +14,22 @@ namespace NzbDrone.Core.Indexers.Slskd
     /// </summary>
     public class SlskdIndexerRequest : IndexerRequest
     {
-        public SlskdIndexerRequest(HttpRequest httpRequest, IReadOnlyCollection<int> albumIds, IReadOnlyList<ArtistSearchAlbum> artistAlbums)
+        public SlskdIndexerRequest(HttpRequest httpRequest, IReadOnlyCollection<int> albumIds, IReadOnlyList<ArtistSearchAlbum> artistAlbums, bool omitsArtist = false)
             : base(httpRequest)
         {
             AlbumIds = albumIds ?? Array.Empty<int>();
             ArtistAlbums = artistAlbums ?? Array.Empty<ArtistSearchAlbum>();
+            OmitsArtist = omitsArtist;
         }
 
         public IReadOnlyCollection<int> AlbumIds { get; }
+
+        /// <summary>
+        /// The query searches for the album title alone. Soulseek only returns paths holding every term of
+        /// a query, so a query naming the artist guarantees the artist is somewhere in each result's path;
+        /// this one guarantees nothing of the kind.
+        /// </summary>
+        public bool OmitsArtist { get; }
 
         /// <summary>
         /// Every monitored album of the artist being searched, which is the set Lidarr maps each release

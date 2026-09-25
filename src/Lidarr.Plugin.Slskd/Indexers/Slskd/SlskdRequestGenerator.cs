@@ -171,10 +171,10 @@ namespace NzbDrone.Core.Indexers.Slskd
             // collapsed by Lidarr on the release Guid.
             foreach (var tier in BuildQueryTiers(searchCriteria))
             {
-                _logger.Debug("Adding search tier for queries: {0}", string.Join(" | ", tier));
+                _logger.Debug("Adding search tier for queries: {0}", string.Join(" | ", tier.Queries));
 
                 var first = true;
-                foreach (var query in tier)
+                foreach (var query in tier.Queries)
                 {
                     var requests = GetRequests(
                         query,
@@ -182,7 +182,8 @@ namespace NzbDrone.Core.Indexers.Slskd
                         maximumTrackCount: maximumTrackCount,
                         artistName: searchCriteria.Artist?.Name,
                         albumTitle: searchCriteria.Albums?.FirstOrDefault()?.Title,
-                        albumYear: searchCriteria.Albums?.FirstOrDefault()?.ReleaseDate?.Year ?? 0);
+                        albumYear: searchCriteria.Albums?.FirstOrDefault()?.ReleaseDate?.Year ?? 0,
+                        omitsArtist: tier.OmitsArtist);
 
                     if (first)
                     {
@@ -218,7 +219,7 @@ namespace NzbDrone.Core.Indexers.Slskd
         /// same tier: for a title like "Told You So (Remixes Vol. 1)" the qualified query finds the
         /// right folders while the broad one finds the base album's, and either alone loses half.
         /// </summary>
-        private IEnumerable<IReadOnlyList<string>> BuildQueryTiers(AlbumSearchCriteria searchCriteria)
+        private IEnumerable<QueryTier> BuildQueryTiers(AlbumSearchCriteria searchCriteria)
         {
             var album = CollapseWhitespace(searchCriteria.AlbumQuery.IsNullOrWhiteSpace()
                 ? searchCriteria.CleanAlbumQuery
@@ -246,7 +247,7 @@ namespace NzbDrone.Core.Indexers.Slskd
                 var filtered = tier.Where(q => q != null).ToList();
                 if (filtered.Count > 0)
                 {
-                    yield return filtered;
+                    yield return new QueryTier(filtered, omitsArtist: false);
                 }
             }
 
@@ -261,7 +262,9 @@ namespace NzbDrone.Core.Indexers.Slskd
                 var query = Normalize(album, seen);
                 if (query != null)
                 {
-                    yield return new[] { query };
+                    // A compilation of various artists is searched this way only, and its folders name no
+                    // one artist to look for
+                    yield return new QueryTier(new[] { query }, omitsArtist: !isVariousArtist);
                 }
             }
 
@@ -279,7 +282,7 @@ namespace NzbDrone.Core.Indexers.Slskd
                 var query = alias == null ? null : Normalize($"{CollapseWhitespace(alias)} {album}", seen);
                 if (query != null)
                 {
-                    yield return new[] { query };
+                    yield return new QueryTier(new[] { query }, omitsArtist: false);
                 }
             }
         }
@@ -387,7 +390,7 @@ namespace NzbDrone.Core.Indexers.Slskd
 
                 for (var level = 0; level < tiers.Count; level++)
                 {
-                    foreach (var text in tiers[level])
+                    foreach (var text in tiers[level].Queries)
                     {
                         // Two albums sharing a title, such as an album and a reissue, would otherwise
                         // be searched for twice over; the one search answers for both instead
@@ -402,7 +405,7 @@ namespace NzbDrone.Core.Indexers.Slskd
                             levels.Add(new List<ArtistSearchQuery>());
                         }
 
-                        var query = new ArtistSearchQuery(text, album);
+                        var query = new ArtistSearchQuery(text, album, tiers[level].OmitsArtist);
                         levels[level].Add(query);
                         byText.Add(text, query);
                     }
@@ -426,7 +429,8 @@ namespace NzbDrone.Core.Indexers.Slskd
                         albumTitle: query.Album.Title,
                         albumYear: query.Album.ReleaseDate?.Year ?? 0,
                         albumIds: query.AlbumIds,
-                        artistAlbums: artistAlbums);
+                        artistAlbums: artistAlbums,
+                        omitsArtist: query.OmitsArtist);
 
                     if (first)
                     {
@@ -488,7 +492,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             return criteria;
         }
 
-        private IEnumerable<IndexerRequest> GetRequests(string searchParameters, int? searchTimeout = null, double? uploadSpeed = null, int trackCount = 0, int maximumTrackCount = 0, string artistName = null, string albumTitle = null, int albumYear = 0, IReadOnlyCollection<int> albumIds = null, IReadOnlyList<ArtistSearchAlbum> artistAlbums = null)
+        private IEnumerable<IndexerRequest> GetRequests(string searchParameters, int? searchTimeout = null, double? uploadSpeed = null, int trackCount = 0, int maximumTrackCount = 0, string artistName = null, string albumTitle = null, int albumYear = 0, IReadOnlyCollection<int> albumIds = null, IReadOnlyList<ArtistSearchAlbum> artistAlbums = null, bool omitsArtist = false)
         {
             _logger.Debug(CultureInfo.InvariantCulture,
                 "Creating search request - Parameters: {0}, Timeout: {1}, Upload Speed: {2}, Track Count: {3}",
@@ -503,7 +507,7 @@ namespace NzbDrone.Core.Indexers.Slskd
                 uploadSpeed ?? Settings.MinimumPeerUploadSpeed);
 
             var request = BuildSearchRequest(searchRequest, trackCount, maximumTrackCount, artistName, albumTitle, albumYear);
-            yield return new SlskdIndexerRequest(request, albumIds, artistAlbums);
+            yield return new SlskdIndexerRequest(request, albumIds, artistAlbums, omitsArtist);
         }
 
         private SearchRequest CreateSearchRequest(string searchText, int searchTimeout, double uploadSpeed)
@@ -587,16 +591,33 @@ namespace NzbDrone.Core.Indexers.Slskd
         /// </summary>
         private sealed class ArtistSearchQuery
         {
-            public ArtistSearchQuery(string text, Core.Music.Album album)
+            public ArtistSearchQuery(string text, Core.Music.Album album, bool omitsArtist)
             {
                 Text = text;
                 Album = album;
+                OmitsArtist = omitsArtist;
                 AlbumIds = new HashSet<int> { album.Id };
             }
 
             public string Text { get; }
             public Core.Music.Album Album { get; }
+            public bool OmitsArtist { get; }
             public HashSet<int> AlbumIds { get; }
+        }
+
+        /// <summary>
+        /// Queries searched together, and whether they leave the artist out.
+        /// </summary>
+        private sealed class QueryTier
+        {
+            public QueryTier(IReadOnlyList<string> queries, bool omitsArtist)
+            {
+                Queries = queries;
+                OmitsArtist = omitsArtist;
+            }
+
+            public IReadOnlyList<string> Queries { get; }
+            public bool OmitsArtist { get; }
         }
     }
 }

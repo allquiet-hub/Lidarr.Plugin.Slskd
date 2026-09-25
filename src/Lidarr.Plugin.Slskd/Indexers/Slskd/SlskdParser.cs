@@ -126,7 +126,8 @@ namespace NzbDrone.Core.Indexers.Slskd
                 DecodeHeader(indexerResponse.HttpRequest, SlskdRequestGenerator.AlbumTitleHeader),
                 GetAlbumYear(indexerResponse.HttpRequest),
                 GetHeaderInt(indexerResponse.HttpRequest, SlskdRequestGenerator.MaximumTrackCountHeader),
-                (indexerResponse.Request as SlskdIndexerRequest)?.ArtistAlbums ?? Array.Empty<ArtistSearchAlbum>());
+                (indexerResponse.Request as SlskdIndexerRequest)?.ArtistAlbums ?? Array.Empty<ArtistSearchAlbum>(),
+                (indexerResponse.Request as SlskdIndexerRequest)?.OmitsArtist ?? false);
         }
 
         private static int GetExpectedTrackCount(HttpRequest request)
@@ -350,6 +351,23 @@ namespace NzbDrone.Core.Indexers.Slskd
             var cleanAlbum = Parser.Parser.CleanArtistName(albumTitle);
             return parsed.AlbumTitle == albumTitle ||
                    (cleanAlbum.IsNotNullOrWhiteSpace() && Parser.Parser.CleanArtistName(parsed.AlbumTitle) == cleanAlbum);
+        }
+
+        /// <summary>
+        /// Whether the artist's name appears anywhere in the release's remote path or file names, compared
+        /// without punctuation or case so that "KRS-One" and "krs one" read alike. A name with nothing to
+        /// compare leaves the question open, which counts as named.
+        /// </summary>
+        private static bool PathNamesArtist(string groupKey, List<SlskdFile> audioFiles, string artistName)
+        {
+            var artist = Normalize(artistName);
+            if (artist.Length == 0)
+            {
+                return true;
+            }
+
+            return Normalize(groupKey).Contains(artist, StringComparison.Ordinal) ||
+                   audioFiles.Any(f => Normalize(f.Name).Contains(artist, StringComparison.Ordinal));
         }
 
         private static bool TitleResemblesAlbum(string title, string albumTitle)
@@ -642,7 +660,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             }
         }
 
-        private IList<ReleaseInfo> ProcessSearchResults(SearchResult searchResult, int expectedTrackCount, string artistName, string albumTitle, int albumYear, int maximumTrackCount, IReadOnlyList<ArtistSearchAlbum> artistAlbums)
+        private IList<ReleaseInfo> ProcessSearchResults(SearchResult searchResult, int expectedTrackCount, string artistName, string albumTitle, int albumYear, int maximumTrackCount, IReadOnlyList<ArtistSearchAlbum> artistAlbums, bool omitsArtist)
         {
             var releases = new List<ReleaseInfo>();
 
@@ -660,13 +678,13 @@ namespace NzbDrone.Core.Indexers.Slskd
                     continue;
                 }
 
-                ProcessUserResponse(response, searchResult.Id, expectedTrackCount, artistName, albumTitle, albumYear, maximumTrackCount, artistAlbums, releases);
+                ProcessUserResponse(response, searchResult.Id, expectedTrackCount, artistName, albumTitle, albumYear, maximumTrackCount, artistAlbums, omitsArtist, releases);
             }
 
             return releases.OrderByDescending(r => r.Size).ToList();
         }
 
-        private void ProcessUserResponse(SearchResponse response, string searchId, int expectedTrackCount, string artistName, string albumTitle, int albumYear, int maximumTrackCount, IReadOnlyList<ArtistSearchAlbum> artistAlbums, List<ReleaseInfo> releases)
+        private void ProcessUserResponse(SearchResponse response, string searchId, int expectedTrackCount, string artistName, string albumTitle, int albumYear, int maximumTrackCount, IReadOnlyList<ArtistSearchAlbum> artistAlbums, bool omitsArtist, List<ReleaseInfo> releases)
         {
             var rawGroups = response.Files
                 .Cast<SlskdFile>()
@@ -682,7 +700,7 @@ namespace NzbDrone.Core.Indexers.Slskd
                     continue;
                 }
 
-                var releaseInfo = CreateReleaseInfo(audioFiles, response, searchId, groupKey, expectedTrackCount, artistName, albumTitle, albumYear, maximumTrackCount, artistAlbums);
+                var releaseInfo = CreateReleaseInfo(audioFiles, response, searchId, groupKey, expectedTrackCount, artistName, albumTitle, albumYear, maximumTrackCount, artistAlbums, omitsArtist);
                 if (releaseInfo != null)
                 {
                     releases.Add(releaseInfo);
@@ -726,7 +744,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             return false;
         }
 
-        private ReleaseInfo CreateReleaseInfo(List<SlskdFile> audioFiles, SearchResponse response, string searchId, string groupKey, int expectedTrackCount, string artistName, string albumTitle, int albumYear, int maximumTrackCount, IReadOnlyList<ArtistSearchAlbum> artistAlbums)
+        private ReleaseInfo CreateReleaseInfo(List<SlskdFile> audioFiles, SearchResponse response, string searchId, string groupKey, int expectedTrackCount, string artistName, string albumTitle, int albumYear, int maximumTrackCount, IReadOnlyList<ArtistSearchAlbum> artistAlbums, bool omitsArtist)
         {
             var folderTitle = FileProcessingUtils.BuildTitle(audioFiles) + DescribePeer(response);
             var (title, pinnedAlbum) = PinToArtistAlbum(
@@ -754,6 +772,7 @@ namespace NzbDrone.Core.Indexers.Slskd
                 AudioFileCount = audioFiles.Count,
                 ExpectedTrackCount = expectedTrackCount,
                 MaximumTrackCount = maximumTrackCount,
+                ArtistMissingFromPath = omitsArtist && !PathNamesArtist(groupKey, audioFiles, artistName),
                 FileDurations = _settings.VerifyDurations
                     ? audioFiles.Select(f => Math.Max(0, f.Length ?? 0)).ToList()
                     : null,
