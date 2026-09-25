@@ -106,6 +106,11 @@ neither the threshold nor the duration is published anywhere, and the plugin can
 Lidarr's own scheduled searches are spread thin enough not to be a concern; running a search over a
 long list of missing albums by hand, repeatedly, is what gets you there.
 
+A search started from an artist page runs the same steps for every monitored album still missing
+tracks, newest first and up to the **Artist Search Album Limit**. Each album widens on its own and
+stops at the first step that finds it, so an artist search costs what searching those albums one by
+one would, and one album turning something up never cuts another short.
+
 Grabbing a release enqueues an slskd **batch** whose destination is pinned to
 `lidarr/<download id>/<Artist> - <Album>/`. That path is set by the plugin, not by your slskd
 configuration, and the download id in it is what ties the transfer back to the grab — including

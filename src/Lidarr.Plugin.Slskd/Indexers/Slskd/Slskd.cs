@@ -77,7 +77,11 @@ namespace NzbDrone.Core.Indexers.Slskd
         ///
         /// This indexer's chains carry no pagination and no RSS state (every pageable request is a
         /// single search), which reduces the base loop to one call per request; what remains here is
-        /// that loop, with tier semantics kept: a tier that yields anything still stops the chain.
+        /// that loop, with tier semantics kept per album. A search of one album stops at the first
+        /// tier that yields anything, as the base loop does. An artist search tags each request with
+        /// the albums it looks for, and drops a request from later tiers once all of those albums have
+        /// found something, so each album falls back on its own instead of all of them stopping as
+        /// soon as any one is found.
         ///
         /// The result goes through CleanupReleases like the base implementation's does. That step is
         /// not cosmetic: it stamps the indexer onto every release, without which a grab is refused as
@@ -90,6 +94,8 @@ namespace NzbDrone.Core.Indexers.Slskd
         protected override async Task<IList<ReleaseInfo>> FetchReleases(Func<IIndexerRequestGenerator, IndexerPageableRequestChain> pageableRequestChainSelector, bool isRecent = false)
         {
             var releases = new List<ReleaseInfo>();
+            var foundAlbumIds = new HashSet<int>();
+            var foundUntagged = false;
 
             try
             {
@@ -98,7 +104,18 @@ namespace NzbDrone.Core.Indexers.Slskd
 
                 for (var i = 0; i < chain.Tiers; i++)
                 {
-                    var requests = chain.GetTier(i).SelectMany(pageable => pageable).ToList();
+                    var tier = chain.GetTier(i).SelectMany(pageable => pageable).ToList();
+                    var requests = tier.Where(r => IsStillSearched(r, foundAlbumIds, foundUntagged)).ToList();
+
+                    if (requests.Count < tier.Count)
+                    {
+                        _logger.Debug("Skipping {0} of the {1} queries of tier {2}, their albums already have results", tier.Count - requests.Count, tier.Count, i + 1);
+                    }
+
+                    if (requests.Count == 0)
+                    {
+                        continue;
+                    }
 
                     using var slots = new SemaphoreSlim(SearchSlots, SearchSlots);
 
@@ -117,11 +134,24 @@ namespace NzbDrone.Core.Indexers.Slskd
                         }
                     }));
 
-                    releases.AddRange(pages.SelectMany(page => page).Where(IsValidRelease));
-
-                    if (releases.Any())
+                    for (var j = 0; j < requests.Count; j++)
                     {
-                        break;
+                        var found = pages[j].Where(IsValidRelease).ToList();
+                        if (found.Count == 0)
+                        {
+                            continue;
+                        }
+
+                        releases.AddRange(found);
+
+                        if (requests[j] is SlskdIndexerRequest { AlbumIds.Count: > 0 } tagged)
+                        {
+                            foundAlbumIds.UnionWith(tagged.AlbumIds);
+                        }
+                        else
+                        {
+                            foundUntagged = true;
+                        }
                     }
                 }
 
@@ -135,6 +165,15 @@ namespace NzbDrone.Core.Indexers.Slskd
 
             return CleanupReleases(releases, isRecent);
         }
+
+        /// <summary>
+        /// Whether a request still has an album to look for. A query shared by several albums runs as
+        /// long as any of them has nothing yet, since the one search answers for all of them.
+        /// </summary>
+        private static bool IsStillSearched(IndexerRequest request, HashSet<int> foundAlbumIds, bool foundUntagged) =>
+            request is SlskdIndexerRequest { AlbumIds.Count: > 0 } tagged
+                ? tagged.AlbumIds.Any(id => !foundAlbumIds.Contains(id))
+                : !foundUntagged;
 
         /// <summary>
         /// Runs one query, offering it again when slskd turns it down for being busy.
