@@ -5,8 +5,6 @@ namespace NzbDrone.Core.Download.Clients.Slskd;
 
 public interface ISlskdProxy
 {
-    bool TestConnectivity(SlskdSettings settings);
-
     SlskdOptions GetOptions(SlskdSettings settings);
 
     Application GetApplication(SlskdSettings settings);

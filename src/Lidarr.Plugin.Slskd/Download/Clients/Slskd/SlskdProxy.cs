@@ -48,12 +48,6 @@ namespace NzbDrone.Core.Download.Clients.Slskd
         }
 
         // Core Public Methods
-        public bool TestConnectivity(SlskdSettings settings)
-        {
-            var response = GetApplication(settings);
-            return response?.Server.IsConnected == true && response.Server.IsLoggedIn;
-        }
-
         public SlskdOptions GetOptions(SlskdSettings settings)
         {
             if (settings == null)

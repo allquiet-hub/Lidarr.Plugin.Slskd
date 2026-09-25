@@ -132,20 +132,23 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 };
             }
 
-            var connectivity = _proxy.TestConnectivity(Settings);
-            if (!connectivity)
-            {
-                return new NzbDroneValidationFailure(string.Empty, "Could not connect to Slskd")
-                {
-                    InfoLink = HttpRequestBuilder.BuildBaseUrl(Settings.UseSsl, Settings.Host, Settings.Port, Settings.UrlBase),
-                    DetailedDescription = "Could not connect to Slskd, please check your settings",
-                };
-            }
+            var application = _proxy.GetApplication(Settings);
 
-            var version = TestVersion();
+            var version = TestVersion(application);
             if (version != null)
             {
                 return version;
+            }
+
+            // Reaching this far means the URL and API key work, so a failure here is not theirs to fix:
+            // slskd cannot search or download until it is logged in to the network
+            if (application?.Server?.IsLoggedIn != true)
+            {
+                return new NzbDroneValidationFailure(string.Empty, $"slskd is not logged in to the Soulseek network, it reports '{application?.Server?.State}'")
+                {
+                    InfoLink = HttpRequestBuilder.BuildBaseUrl(Settings.UseSsl, Settings.Host, Settings.Port, Settings.UrlBase),
+                    DetailedDescription = "slskd answers and accepts the API key, but it is not connected to Soulseek. Check its Soulseek credentials and connection in slskd.",
+                };
             }
 
             if (Settings.RepairConfiguration)
@@ -298,9 +301,9 @@ namespace NzbDrone.Core.Download.Clients.Slskd
         /// transfer back to the grab that started it rests on the download id living in the batch
         /// destination, which older versions cannot be told to use.
         /// </summary>
-        private ValidationFailure TestVersion()
+        private ValidationFailure TestVersion(Application application)
         {
-            if (SlskdCapabilities.IsSupported(_proxy.GetApplication(Settings)?.Version))
+            if (SlskdCapabilities.IsSupported(application?.Version))
             {
                 return null;
             }
