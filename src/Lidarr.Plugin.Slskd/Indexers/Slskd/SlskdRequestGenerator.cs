@@ -361,6 +361,16 @@ namespace NzbDrone.Core.Indexers.Slskd
                 incomplete.Count,
                 albums.Count);
 
+            // Every monitored album, searched or not: Lidarr maps each release against all of them, so
+            // the parser needs all of them to tell which one a folder is
+            var artistAlbums = monitored
+                .Select(a =>
+                {
+                    var (minimum, maximum) = GetTrackCountBounds(a);
+                    return new ArtistSearchAlbum(a.Title, a.ReleaseDate?.Year ?? 0, minimum, maximum);
+                })
+                .ToList();
+
             var levels = new List<List<ArtistSearchQuery>>();
             var byText = new Dictionary<string, ArtistSearchQuery>(StringComparer.OrdinalIgnoreCase);
 
@@ -410,7 +420,8 @@ namespace NzbDrone.Core.Indexers.Slskd
                         artistName: searchCriteria.Artist?.Name,
                         albumTitle: query.Album.Title,
                         albumYear: query.Album.ReleaseDate?.Year ?? 0,
-                        albumIds: query.AlbumIds);
+                        albumIds: query.AlbumIds,
+                        artistAlbums: artistAlbums);
 
                     if (first)
                     {
@@ -472,7 +483,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             return criteria;
         }
 
-        private IEnumerable<IndexerRequest> GetRequests(string searchParameters, int? searchTimeout = null, double? uploadSpeed = null, int trackCount = 0, int maximumTrackCount = 0, string artistName = null, string albumTitle = null, int albumYear = 0, IReadOnlyCollection<int> albumIds = null)
+        private IEnumerable<IndexerRequest> GetRequests(string searchParameters, int? searchTimeout = null, double? uploadSpeed = null, int trackCount = 0, int maximumTrackCount = 0, string artistName = null, string albumTitle = null, int albumYear = 0, IReadOnlyCollection<int> albumIds = null, IReadOnlyList<ArtistSearchAlbum> artistAlbums = null)
         {
             _logger.Debug(CultureInfo.InvariantCulture,
                 "Creating search request - Parameters: {0}, Timeout: {1}, Upload Speed: {2}, Track Count: {3}",
@@ -487,7 +498,7 @@ namespace NzbDrone.Core.Indexers.Slskd
                 uploadSpeed ?? Settings.MinimumPeerUploadSpeed);
 
             var request = BuildSearchRequest(searchRequest, trackCount, maximumTrackCount, artistName, albumTitle, albumYear);
-            yield return new SlskdIndexerRequest(request, albumIds);
+            yield return new SlskdIndexerRequest(request, albumIds, artistAlbums);
         }
 
         private SearchRequest CreateSearchRequest(string searchText, int searchTimeout, double uploadSpeed)

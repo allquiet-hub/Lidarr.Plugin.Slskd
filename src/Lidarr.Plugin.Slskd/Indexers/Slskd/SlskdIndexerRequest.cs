@@ -14,12 +14,39 @@ namespace NzbDrone.Core.Indexers.Slskd
     /// </summary>
     public class SlskdIndexerRequest : IndexerRequest
     {
-        public SlskdIndexerRequest(HttpRequest httpRequest, IReadOnlyCollection<int> albumIds)
+        public SlskdIndexerRequest(HttpRequest httpRequest, IReadOnlyCollection<int> albumIds, IReadOnlyList<ArtistSearchAlbum> artistAlbums)
             : base(httpRequest)
         {
             AlbumIds = albumIds ?? Array.Empty<int>();
+            ArtistAlbums = artistAlbums ?? Array.Empty<ArtistSearchAlbum>();
         }
 
         public IReadOnlyCollection<int> AlbumIds { get; }
+
+        /// <summary>
+        /// Every monitored album of the artist being searched, which is the set Lidarr maps each release
+        /// of an artist search against. Empty outside an artist search.
+        /// </summary>
+        public IReadOnlyList<ArtistSearchAlbum> ArtistAlbums { get; }
+    }
+
+    /// <summary>
+    /// What the parser needs to know about an album a release of an artist search may belong to: the
+    /// names that make its title map, and the track counts its completeness is judged by.
+    /// </summary>
+    public class ArtistSearchAlbum
+    {
+        public ArtistSearchAlbum(string title, int year, int minimumTrackCount, int maximumTrackCount)
+        {
+            Title = title;
+            Year = year;
+            MinimumTrackCount = minimumTrackCount;
+            MaximumTrackCount = maximumTrackCount;
+        }
+
+        public string Title { get; }
+        public int Year { get; }
+        public int MinimumTrackCount { get; }
+        public int MaximumTrackCount { get; }
     }
 }
