@@ -536,6 +536,11 @@ namespace NzbDrone.Core.Indexers.Slskd
             return username;
         }
 
+        /// <summary>
+        /// Stops a search slskd is still running. PUT is what stops it; DELETE only drops the record, and
+        /// leaves the search running on in the slot it holds until its responses stop coming, which for a
+        /// search abandoned for never ending may be a long time, with every later query queued behind it.
+        /// </summary>
         private void CancelSearch(string searchId)
         {
             try
@@ -545,7 +550,7 @@ namespace NzbDrone.Core.Indexers.Slskd
                     .SetHeader("X-API-Key", _settings.ApiKey)
                     .Build();
 
-                request.Method = HttpMethod.Delete;
+                request.Method = HttpMethod.Put;
                 _httpClient.Execute(request);
             }
             catch (Exception ex)
