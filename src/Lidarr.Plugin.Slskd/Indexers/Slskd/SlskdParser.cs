@@ -113,7 +113,8 @@ namespace NzbDrone.Core.Indexers.Slskd
                 DecodeHeader(indexerResponse.HttpRequest, SlskdRequestGenerator.ArtistNameHeader),
                 DecodeHeader(indexerResponse.HttpRequest, SlskdRequestGenerator.AlbumTitleHeader),
                 GetAlbumYear(indexerResponse.HttpRequest),
-                GetHeaderInt(indexerResponse.HttpRequest, SlskdRequestGenerator.MaximumTrackCountHeader));
+                GetHeaderInt(indexerResponse.HttpRequest, SlskdRequestGenerator.MaximumTrackCountHeader),
+                (indexerResponse.Request as SlskdIndexerRequest)?.ArtistAlbums ?? Array.Empty<ArtistSearchAlbum>());
         }
 
         private static int GetExpectedTrackCount(HttpRequest request)
@@ -188,16 +189,10 @@ namespace NzbDrone.Core.Indexers.Slskd
                 return $"{artistName} - {flatAlbum} ({albumYear}) {title}";
             }
 
-            // Mirrors Parser.ParseAlbumTitleWithSearchCriteria: accents are stripped from the names,
-            // spaces match any separator, remaining punctuation is literal
             var artist = (artistName == "Various Artists" ? "VA" : artistName).RemoveAccent();
             var album = albumTitle.RemoveAccent();
             var escapedArtist = Regex.Escape(artist).Replace(@"\ ", @"[\W_]");
-            var escapedAlbum = Regex.Escape(album).Replace(@"\ ", @"[\W_]");
-
-            var criteriaRegex = new Regex(
-                @"^(\W*|\b)(" + escapedArtist + @")(\W*|\b).*(\W*|\b)(" + escapedAlbum + @")(\W*|\b)",
-                RegexOptions.IgnoreCase);
+            var criteriaRegex = BuildCriteriaRegex(artistName, albumTitle);
 
             if (criteriaRegex.IsMatch(title))
             {
@@ -226,6 +221,123 @@ namespace NzbDrone.Core.Indexers.Slskd
             }
 
             return criteriaRegex.IsMatch(annotated) ? annotated : title;
+        }
+
+        /// <summary>
+        /// Mirrors Parser.ParseAlbumTitleWithSearchCriteria for a single album: accents are stripped
+        /// from the names, spaces match any separator, remaining punctuation is literal.
+        /// </summary>
+        private static Regex BuildCriteriaRegex(string artistName, string albumTitle)
+        {
+            var artist = (artistName == "Various Artists" ? "VA" : artistName).RemoveAccent();
+            var escapedArtist = Regex.Escape(artist).Replace(@"\ ", @"[\W_]");
+            var escapedAlbum = Regex.Escape(albumTitle.RemoveAccent()).Replace(@"\ ", @"[\W_]");
+
+            return new Regex(
+                @"^(\W*|\b)(" + escapedArtist + @")(\W*|\b).*(\W*|\b)(" + escapedAlbum + @")(\W*|\b)",
+                RegexOptions.IgnoreCase);
+        }
+
+        /// <summary>
+        /// Keeps a release of an artist search tied to the album it was searched for, as it is when the
+        /// same album is searched from its own page.
+        ///
+        /// A title the standard parser cannot read goes to the criteria parser, which in an artist
+        /// search is handed every monitored album at once and joins their titles into one alternation
+        /// behind a greedy wildcard. The album whose title starts furthest to the right wins, with no
+        /// word boundary required in front of it, so any monitored title found inside the searched one
+        /// takes the release: "Purple Rain" maps to "Rain", "Reload" to "Load", "Alive 2007" to "Live".
+        /// The release is then grabbed for an album it is not, and its import fails.
+        ///
+        /// Only a title the criteria parser would give to the searched album is touched, so a folder
+        /// that names a different record still maps wherever Lidarr sends it. It is prefixed with the
+        /// library's names in the 'Artist - Album (Year)' shape, which the standard parser reads before
+        /// the criteria parser is ever asked, and which Lidarr resolves against the searched albums by
+        /// exact title and then by clean title. The shape is kept only when Lidarr's own parser reads
+        /// it back as this artist and album; titles it cannot carry, such as an album without a release
+        /// date, keep the title they had.
+        ///
+        /// A folder can belong to a longer album of the same name instead: searching "Live" also finds
+        /// the folders of "Live Killers". When another monitored album contains the searched title and
+        /// the folder resembles it, the folder is pinned to that album, the most specific name it
+        /// matches. The same folder found by that album's own query then carries the same title, and
+        /// the copy Lidarr keeps of the two is right either way.
+        /// </summary>
+        private static (string Title, ArtistSearchAlbum Album) PinToArtistAlbum(string folderTitle, string mappableTitle, string artistName, string albumTitle, int albumYear, IReadOnlyList<ArtistSearchAlbum> artistAlbums)
+        {
+            if (artistAlbums.Count == 0 || artistName.IsNullOrWhiteSpace() || albumTitle.IsNullOrWhiteSpace())
+            {
+                return (mappableTitle, null);
+            }
+
+            // A title the standard parser reads never reaches the criteria parser, in either search
+            if (Parser.Parser.ParseAlbumTitle(mappableTitle) != null)
+            {
+                return (mappableTitle, null);
+            }
+
+            if (!BuildCriteriaRegex(artistName, albumTitle).IsMatch(mappableTitle))
+            {
+                return (mappableTitle, null);
+            }
+
+            var searched = artistAlbums.FirstOrDefault(a => a.Title == albumTitle && a.Year == albumYear) ??
+                           new ArtistSearchAlbum(albumTitle, albumYear, 0, 0);
+
+            // Resemblance rather than the criteria pattern, which takes brackets literally and so would
+            // never let "Told You So Remixes Vol. 1" claim "Told You So (Remixes Vol. 1)"
+            var normalizedSearched = Normalize(albumTitle);
+            var target = normalizedSearched.Length == 0
+                ? searched
+                : artistAlbums
+                    .Where(a => a.Title != null &&
+                                a.Title.Length > albumTitle.Length &&
+                                Normalize(a.Title).Contains(normalizedSearched, StringComparison.Ordinal) &&
+                                TitleResemblesAlbum(folderTitle, a.Title))
+                    .OrderByDescending(a => a.Title.Length)
+                    .FirstOrDefault() ?? searched;
+
+            if (target.Year <= 0)
+            {
+                return (mappableTitle, null);
+            }
+
+            // The standard parser ends the album at its first bracket, so a qualified title is also
+            // tried flattened; the clean title Lidarr compares by drops the brackets either way
+            var flatAlbum = WhitespaceRegex.Replace(target.Title.Replace('(', ' ').Replace(')', ' ').Replace('[', ' ').Replace(']', ' '), " ").Trim();
+
+            foreach (var album in new[] { target.Title, flatAlbum }.Distinct())
+            {
+                var pinned = $"{artistName} - {album} ({target.Year}) {folderTitle}";
+                if (ParsesAs(pinned, artistName, target.Title))
+                {
+                    return (pinned, target);
+                }
+            }
+
+            return (mappableTitle, null);
+        }
+
+        /// <summary>
+        /// Whether the standard parser reads the title as this artist and album by the same rules the
+        /// mapping applies after it: the artist by clean name, the album by exact title or clean title.
+        /// </summary>
+        private static bool ParsesAs(string title, string artistName, string albumTitle)
+        {
+            var parsed = Parser.Parser.ParseAlbumTitle(title);
+            if (parsed == null || parsed.Discography || parsed.ArtistName.IsNullOrWhiteSpace() || parsed.AlbumTitle.IsNullOrWhiteSpace())
+            {
+                return false;
+            }
+
+            if (Parser.Parser.CleanArtistName(parsed.ArtistName) != Parser.Parser.CleanArtistName(artistName))
+            {
+                return false;
+            }
+
+            var cleanAlbum = Parser.Parser.CleanArtistName(albumTitle);
+            return parsed.AlbumTitle == albumTitle ||
+                   (cleanAlbum.IsNotNullOrWhiteSpace() && Parser.Parser.CleanArtistName(parsed.AlbumTitle) == cleanAlbum);
         }
 
         private static bool TitleResemblesAlbum(string title, string albumTitle)
@@ -469,7 +581,7 @@ namespace NzbDrone.Core.Indexers.Slskd
             }
         }
 
-        private IList<ReleaseInfo> ProcessSearchResults(SearchResult searchResult, int expectedTrackCount, string artistName, string albumTitle, int albumYear, int maximumTrackCount)
+        private IList<ReleaseInfo> ProcessSearchResults(SearchResult searchResult, int expectedTrackCount, string artistName, string albumTitle, int albumYear, int maximumTrackCount, IReadOnlyList<ArtistSearchAlbum> artistAlbums)
         {
             var releases = new List<ReleaseInfo>();
 
@@ -487,13 +599,13 @@ namespace NzbDrone.Core.Indexers.Slskd
                     continue;
                 }
 
-                ProcessUserResponse(response, searchResult.Id, expectedTrackCount, artistName, albumTitle, albumYear, maximumTrackCount, releases);
+                ProcessUserResponse(response, searchResult.Id, expectedTrackCount, artistName, albumTitle, albumYear, maximumTrackCount, artistAlbums, releases);
             }
 
             return releases.OrderByDescending(r => r.Size).ToList();
         }
 
-        private void ProcessUserResponse(SearchResponse response, string searchId, int expectedTrackCount, string artistName, string albumTitle, int albumYear, int maximumTrackCount, List<ReleaseInfo> releases)
+        private void ProcessUserResponse(SearchResponse response, string searchId, int expectedTrackCount, string artistName, string albumTitle, int albumYear, int maximumTrackCount, IReadOnlyList<ArtistSearchAlbum> artistAlbums, List<ReleaseInfo> releases)
         {
             var rawGroups = response.Files
                 .Cast<SlskdFile>()
@@ -509,7 +621,7 @@ namespace NzbDrone.Core.Indexers.Slskd
                     continue;
                 }
 
-                var releaseInfo = CreateReleaseInfo(audioFiles, response, searchId, groupKey, expectedTrackCount, artistName, albumTitle, albumYear, maximumTrackCount);
+                var releaseInfo = CreateReleaseInfo(audioFiles, response, searchId, groupKey, expectedTrackCount, artistName, albumTitle, albumYear, maximumTrackCount, artistAlbums);
                 if (releaseInfo != null)
                 {
                     releases.Add(releaseInfo);
@@ -553,8 +665,24 @@ namespace NzbDrone.Core.Indexers.Slskd
             return false;
         }
 
-        private ReleaseInfo CreateReleaseInfo(List<SlskdFile> audioFiles, SearchResponse response, string searchId, string groupKey, int expectedTrackCount, string artistName, string albumTitle, int albumYear, int maximumTrackCount)
+        private ReleaseInfo CreateReleaseInfo(List<SlskdFile> audioFiles, SearchResponse response, string searchId, string groupKey, int expectedTrackCount, string artistName, string albumTitle, int albumYear, int maximumTrackCount, IReadOnlyList<ArtistSearchAlbum> artistAlbums)
         {
+            var folderTitle = FileProcessingUtils.BuildTitle(audioFiles) + DescribePeer(response);
+            var (title, pinnedAlbum) = PinToArtistAlbum(
+                folderTitle,
+                EnsureMappableTitle(folderTitle, artistName, albumTitle, albumYear),
+                artistName,
+                albumTitle,
+                albumYear,
+                artistAlbums);
+
+            // A folder pinned to another album than the one searched is judged by that album's tracks
+            if (pinnedAlbum != null && pinnedAlbum.Title != albumTitle)
+            {
+                expectedTrackCount = _settings.AllowIncompleteReleases ? 0 : pinnedAlbum.MinimumTrackCount;
+                maximumTrackCount = pinnedAlbum.MaximumTrackCount;
+            }
+
             var isSingleFile = audioFiles.Count == 1;
             var downloadPath = isSingleFile ? audioFiles[0].FileName : groupKey;
             var identifier = ReleaseIdentifier.ForRelease(response.Username, groupKey);
@@ -569,11 +697,7 @@ namespace NzbDrone.Core.Indexers.Slskd
                     ? audioFiles.Select(f => Math.Max(0, f.Length ?? 0)).ToList()
                     : null,
                 Guid = identifier,
-                Title = EnsureMappableTitle(
-                    FileProcessingUtils.BuildTitle(audioFiles) + DescribePeer(response),
-                    artistName,
-                    albumTitle,
-                    albumYear),
+                Title = title,
                 DownloadUrl = downloadPath,
                 InfoUrl = BuildSearchLink(searchId),
                 Size = totalSize,
