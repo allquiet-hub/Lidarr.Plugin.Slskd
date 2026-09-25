@@ -265,11 +265,9 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 return;
             }
 
-            // Collect every transfer that belongs to this download ID. Batched downloads are matched on
-            // the batch external ID; for legacy ones, multiple disc sub-folders map to the same album ID.
+            // Collect every transfer that belongs to this download ID, recognised by the batch whose
+            // destination carries it
             var matchingFiles = new List<(string Username, DirectoryFile File)>();
-            var matchingDirectories = new List<DownloadDirectory>();
-            var isBatched = false;
 
             foreach (var queue in queues)
             {
@@ -281,18 +279,14 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                         .Where(f => TryResolveDownloadId(f.BatchId, settings, out var id) && id == downloadId)
                         .ToList();
 
-                    if (batchFiles.Any())
-                    {
-                        matchingFiles.AddRange(batchFiles.Select(file => (queue.Username, file)));
-                        matchingDirectories.Add(directory);
-                        isBatched = true;
-                    }
+                    matchingFiles.AddRange(batchFiles.Select(file => (queue.Username, file)));
                 }
             }
 
             if (matchingFiles.Count == 0)
             {
                 _logger.Warn($"No user or directory found with matching hash for download ID: {downloadId}");
+
                 return;
             }
 
@@ -318,24 +312,8 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 CancelUserDownloadFile(username, file.Id, true, settings);
             }
 
-            string directoryToDelete;
-
-            if (isBatched)
-            {
-                // Everything the plugin enqueued for this release lives under a single known folder
-                directoryToDelete = $"{DestinationRoot}/{downloadId}";
-            }
-            else
-            {
-                // For multi-disc albums, delete the shared parent; for single albums, the directory itself.
-                var firstDir = matchingDirectories[0].Directory;
-                var firstDirName = firstDir?.Split('\\').LastOrDefault() ?? string.Empty;
-                directoryToDelete = (matchingDirectories.Count > 1 || FileProcessingUtils.IsDiscFolder(firstDirName))
-                    ? FileProcessingUtils.GetParentPath(firstDir)
-                    : firstDir;
-            }
-
-            DeleteDownloadDirectory(directoryToDelete, settings);
+            // Everything the plugin enqueued for this release lives under a single known folder
+            DeleteDownloadDirectory($"{DestinationRoot}/{downloadId}", settings);
         }
 
         /// <summary>
