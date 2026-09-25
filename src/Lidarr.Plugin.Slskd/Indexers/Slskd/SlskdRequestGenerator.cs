@@ -253,8 +253,10 @@ namespace NzbDrone.Core.Indexers.Slskd
             // Dropping the artist widens the search to anything sharing the album's words, which only
             // pays off when those words are specific enough to stand alone. A short title such as
             // "Scrap Metal" matches unrelated folders by the dozen, turning an honest "not found" into a
-            // page of noise that Lidarr then has to reject one by one.
-            if (WordCount(album) >= DistinctiveAlbumWordCount)
+            // page of noise that Lidarr then has to reject one by one. A single never qualifies, however
+            // long its title: that title is a song's, and searched alone it returns every recording of
+            // every song by that name - hundreds of peers, by other artists, for a single track.
+            if (WordCount(album) >= DistinctiveAlbumWordCount && !IsSingle(searchCriteria.Albums?.FirstOrDefault()))
             {
                 var query = Normalize(album, seen);
                 if (query != null)
@@ -281,6 +283,9 @@ namespace NzbDrone.Core.Indexers.Slskd
                 }
             }
         }
+
+        private static bool IsSingle(Core.Music.Album album) =>
+            string.Equals(album?.AlbumType, "Single", StringComparison.OrdinalIgnoreCase);
 
         private static string CollapseWhitespace(string value) =>
             value.IsNullOrWhiteSpace() ? string.Empty : WhitespacePattern.Replace(value, " ").Trim();
