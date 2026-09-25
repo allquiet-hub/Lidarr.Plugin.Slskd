@@ -36,8 +36,9 @@ namespace NzbDrone.Core.Indexers.Slskd
         /// <summary>
         /// How many of a tier's queries are searched for at once. slskd builds its Soulseek client with
         /// maximumConcurrentSearches set to 2, a literal in its source rather than one of its options,
-        /// so an instance cannot be asked what it allows: the number is matched here instead. Asking
-        /// for more does not queue, it is refused; asking for less leaves one of the two slots idle.
+        /// so an instance cannot be asked what it allows: the number is matched here instead. A search
+        /// past the two is not refused but queued inside slskd, where it spends the parser's budget
+        /// waiting for a slot rather than searching; asking for less leaves one of the two slots idle.
         /// </summary>
         private const int SearchSlots = 2;
 
@@ -63,17 +64,25 @@ namespace NzbDrone.Core.Indexers.Slskd
 
         public override IParseIndexerResponse GetParser()
         {
-            return new SlskdParser(Definition, Settings, RateLimit, _httpClient, _logger);
+            return CreateParser(null);
+        }
+
+        private SlskdParser CreateParser(Action searchEnded)
+        {
+            return new SlskdParser(Definition, Settings, RateLimit, _httpClient, _logger, searchEnded);
         }
 
         /// <summary>
         /// Fetches the queries of a tier two at a time.
         ///
-        /// slskd runs two outgoing searches at once and admits new ones through a lock it holds while a
-        /// search waits for a free slot, so a third arriving alongside two running ones is refused with
-        /// 429 rather than queued. A tier dispatched all at once therefore loses every query past the
-        /// second - which an artist search, whose tier holds a query per album, cannot afford. Keeping
-        /// two in flight fills slskd's capacity without ever asking for more than it has.
+        /// slskd runs two searches at once and queues the rest, while the endpoint that starts one takes
+        /// a single request at a time and refuses a second arriving meanwhile with 429. A tier dispatched
+        /// all at once therefore has its queries collide on that endpoint and pile up in slskd's queue,
+        /// spending their time budget waiting rather than searching - which an artist search, whose tier
+        /// holds a query per album, cannot afford. Keeping two in flight fills slskd's capacity without
+        /// queuing anything. A slot is handed on as soon as slskd reports its search complete, which is
+        /// when slskd frees its own, so reading one search's responses overlaps the next search instead
+        /// of holding it back.
         ///
         /// This indexer's chains carry no pagination and no RSS state (every pageable request is a
         /// single search), which reduces the base loop to one call per request; what remains here is
@@ -123,14 +132,25 @@ namespace NzbDrone.Core.Indexers.Slskd
                     {
                         await slots.WaitAsync();
 
+                        // Released by the parser once slskd has ended the search, or on the way out
+                        // at the latest, and only once either way
+                        var released = 0;
+                        void ReleaseSlot()
+                        {
+                            if (Interlocked.Exchange(ref released, 1) == 0)
+                            {
+                                slots.Release();
+                            }
+                        }
+
                         try
                         {
                             // One parser per request: parsers are constructed per search and not shared
-                            return await FetchPageWhenAccepted(request);
+                            return await FetchPageWhenAccepted(request, ReleaseSlot);
                         }
                         finally
                         {
-                            slots.Release();
+                            ReleaseSlot();
                         }
                     }));
 
@@ -178,18 +198,19 @@ namespace NzbDrone.Core.Indexers.Slskd
         /// <summary>
         /// Runs one query, offering it again when slskd turns it down for being busy.
         ///
-        /// Searches issued from here are already started one at a time, so a 429 means something else
-        /// was starting one - another Lidarr search running alongside this one, or another application
-        /// sharing the slskd instance. Retrying keeps that query, which would otherwise abort the whole
-        /// fetch and record a failure against the indexer, taking it out of searches for a while.
+        /// slskd starts one search at a time, so a 429 means another was being started at that moment -
+        /// another Lidarr search running alongside this one, another application sharing the slskd
+        /// instance, or a start slowed by slskd's database. Retrying keeps that query, which would
+        /// otherwise abort the whole fetch and record a failure against the indexer, taking it out of
+        /// searches for a while.
         /// </summary>
-        private async Task<IList<ReleaseInfo>> FetchPageWhenAccepted(IndexerRequest request)
+        private async Task<IList<ReleaseInfo>> FetchPageWhenAccepted(IndexerRequest request, Action searchEnded)
         {
             for (var attempt = 1; ; attempt++)
             {
                 try
                 {
-                    return await FetchPage(request, GetParser());
+                    return await FetchPage(request, CreateParser(searchEnded));
                 }
                 catch (TooManyRequestsException) when (attempt < SearchStartAttempts)
                 {

@@ -23,7 +23,12 @@ namespace NzbDrone.Core.Indexers.Slskd
     {
         private const int BytesPerMegabyte = 1024 * 1024;
 
-        private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(750);
+        /// <summary>
+        /// How often a running search is asked whether it has ended. The request carries no responses and
+        /// is answered from slskd's own store, so it costs little, while every interval spent after the
+        /// search has ended is time one of slskd's two search slots could have spent on the next query.
+        /// </summary>
+        private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
 
         private static readonly TimeSpan ResponseSettleBudget = TimeSpan.FromSeconds(8);
 
@@ -72,9 +77,13 @@ namespace NzbDrone.Core.Indexers.Slskd
         private readonly IHttpClient _httpClient;
         private readonly Logger _logger;
         private readonly HashSet<string> _ignoredUsersSet;
+        private readonly Action _searchEnded;
 
-        public SlskdParser(ProviderDefinition definition, SlskdIndexerSettings settings, TimeSpan rateLimit, IHttpClient httpClient, Logger logger)
+        /// <param name="searchEnded">Called once the search no longer occupies one of slskd's search
+        /// slots, which is before its responses have been read.</param>
+        public SlskdParser(ProviderDefinition definition, SlskdIndexerSettings settings, TimeSpan rateLimit, IHttpClient httpClient, Logger logger, Action searchEnded = null)
         {
+            _searchEnded = searchEnded;
             _definition = definition ?? throw new ArgumentNullException(nameof(definition));
             _settings = settings ?? throw new ArgumentNullException(nameof(settings));
             _rateLimit = rateLimit;
@@ -94,8 +103,9 @@ namespace NzbDrone.Core.Indexers.Slskd
             }
 
             var searchResult = GetInitialSearchResult(indexerResponse);
+            var ended = WaitForSearchEnd(searchResult.Id);
 
-            if (!WaitForSearchCompletion(searchResult.Id))
+            if (ended == null)
             {
                 // Abandoning the tier is better than throwing: a slow search would otherwise fail the
                 // whole feed and mark the indexer unhealthy, when the next query may well succeed
@@ -105,7 +115,9 @@ namespace NzbDrone.Core.Indexers.Slskd
             }
 
             // Re-fetch with responses: slskd withholds the response bodies until the search completes
-            searchResult = FetchSettledSearchResult(searchResult);
+            searchResult = ended.EndedAt != null
+                ? FetchWrittenSearchResult(ended)
+                : FetchSettledSearchResult(ended);
 
             return ProcessSearchResults(
                 searchResult,
@@ -373,12 +385,34 @@ namespace NzbDrone.Core.Indexers.Slskd
         }
 
         /// <summary>
-        /// Fetches the responses of a completed search, waiting out slskd's write-behind.
+        /// Fetches the responses of a search slskd has finished writing. Only a failed fetch is tried
+        /// again: the payload of a search that drew a thousand peers is large enough to fail on its own
+        /// under load, while one that arrives is whole.
+        /// </summary>
+        private SearchResult FetchWrittenSearchResult(SearchResult ended)
+        {
+            var stopwatch = Stopwatch.StartNew();
+
+            while (true)
+            {
+                var result = TryGetSearchResult(ended.Id);
+                if (result != null || stopwatch.Elapsed >= ResponseSettleBudget)
+                {
+                    return result ?? ended;
+                }
+
+                Thread.Sleep(ResponseSettleInterval);
+            }
+        }
+
+        /// <summary>
+        /// Fetches the responses of a completed search whose final write was never seen, waiting out
+        /// slskd's write-behind by the payload itself.
         ///
         /// slskd marks a search complete before it has flushed the responses to its store: fetched in
-        /// the same instant, the payload comes back empty or partial with no error, complete only
-        /// moments later. The payload is therefore refetched until it stops growing, and a search is
-        /// believed to be empty only once it has stayed empty for the confirmation window.
+        /// the same instant, the payload comes back empty with no error, complete only moments later.
+        /// The payload is therefore refetched until it stops growing, and a search is believed to be
+        /// empty only once it has stayed empty for the confirmation window.
         /// </summary>
         private SearchResult FetchSettledSearchResult(SearchResult completed)
         {
@@ -469,25 +503,47 @@ namespace NzbDrone.Core.Indexers.Slskd
         }
 
         /// <summary>
-        /// Polls until slskd marks the search complete, giving up once the configured budget is spent.
+        /// Polls until slskd has ended the search and written its responses, returning its last state,
+        /// or null when it did not end within the budget.
+        ///
+        /// slskd reports the two moments apart. The search ends when its state reads complete, which is
+        /// also when slskd frees the search slot it held, so the caller is told right away and the next
+        /// query can start while this one is still being read. The responses follow in the one save that
+        /// also sets EndedAt, which makes EndedAt the signal that the payload is whole: waiting for it
+        /// replaces guessing how long an empty search has to stay empty before it is believed. A search
+        /// whose final write is not seen within the settle budget is returned without it, and read the
+        /// way the payload itself allows.
         /// </summary>
-        private bool WaitForSearchCompletion(string searchId)
+        private SearchResult WaitForSearchEnd(string searchId)
         {
             var stopwatch = Stopwatch.StartNew();
+            TimeSpan? completedAt = null;
 
-            while (stopwatch.Elapsed < SearchBudget)
+            while (true)
             {
-                if (GetSearchResult(searchId, includeResponses: false).IsComplete)
+                var status = GetSearchResult(searchId, includeResponses: false);
+
+                if (status.IsComplete && completedAt == null)
                 {
-                    return true;
+                    completedAt = stopwatch.Elapsed;
+                    _searchEnded?.Invoke();
+                }
+
+                if (status.EndedAt != null ||
+                    (completedAt != null && stopwatch.Elapsed - completedAt >= ResponseSettleBudget))
+                {
+                    return status;
+                }
+
+                if (completedAt == null && stopwatch.Elapsed >= SearchBudget)
+                {
+                    return null;
                 }
 
                 // Without an explicit interval the loop is paced only by Lidarr's rate limiter, which
                 // costs a lot of round trips for no gain
                 Thread.Sleep(PollInterval);
             }
-
-            return false;
         }
 
         private bool IsIgnoredUser(string username)
