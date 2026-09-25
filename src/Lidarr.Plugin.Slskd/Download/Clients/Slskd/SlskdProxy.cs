@@ -287,6 +287,13 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             {
                 _logger.Warn($"No user or directory found with matching hash for download ID: {downloadId}");
 
+                // Transfers cleared by hand in slskd leave their folder behind, and nothing else would
+                // ever remove it. The folder is named after this download alone, so it is safe to delete.
+                if (deleteData)
+                {
+                    DeleteDownloadDirectory($"{DestinationRoot}/{downloadId}", settings);
+                }
+
                 return;
             }
 
