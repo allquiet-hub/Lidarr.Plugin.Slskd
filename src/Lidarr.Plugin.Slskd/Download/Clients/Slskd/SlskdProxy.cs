@@ -421,6 +421,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                               ?? FileProcessingUtils.SanitizePathSegment(albumPath.Split('\\').LastOrDefault());
             var destinationPrefix = $"{DestinationRoot}/{identifier}";
             var enqueued = new List<string>();
+            var refused = new List<string>();
 
             foreach (var group in audioFiles.GroupBy(f => f.ParentPath ?? string.Empty, StringComparer.OrdinalIgnoreCase))
             {
@@ -466,20 +467,70 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                         $"Slskd could not reach user {username}: {httpException.Response?.Content}", httpException);
                 }
 
-                foreach (var failure in response?.Failures ?? new List<EnqueueBatchFailure>())
+                var failures = response?.Failures ?? new List<EnqueueBatchFailure>();
+                foreach (var failure in failures)
                 {
                     _logger.Warn($"Slskd refused to enqueue '{failure.Filename}': {failure.Message}");
+                    refused.Add(failure.Filename);
                 }
 
-                if (response?.Batch?.Id != null)
+                // slskd creates the batch even when it refuses every file, and an empty batch has no
+                // transfers to ever show up in the queue, so it is not tracked
+                var accepted = body.Files.Count - failures.Count;
+                if (response?.Batch?.Id != null && accepted > 0)
                 {
                     enqueued.Add(response.Batch.Id);
 
-                    // Seed the cache so the first queue poll does not need to look the batch up
-                    CacheBatch(response.Batch.Id, new CachedBatch(body.Options, body.Files.Count));
+                    // Seed the cache so the first queue poll does not need to look the batch up. The
+                    // count is what slskd accepted, not what was asked for: a refused file never
+                    // appears in this batch, and counting it would fail a download whose every
+                    // transfer completed
+                    CacheBatch(response.Batch.Id, new CachedBatch(body.Options, accepted));
                 }
             }
+
+            if (!refused.Any())
+            {
+                return;
+            }
+
+            var inFlight = GetInFlightTransfers(username, settings);
+            var missing = refused.Where(file => !IsInFlightFor(file, inFlight, identifier, settings)).ToList();
+            if (missing.Any())
+            {
+                if (enqueued.Any())
+                {
+                    DiscardBatches(enqueued, settings);
+                }
+
+                throw new SlskdEnqueueRefusedException(
+                    $"Slskd would not enqueue {missing.Count} of the {audioFiles.Count} files from {username}, " +
+                    $"most likely because it is already downloading them for another grab or outside Lidarr: {string.Join(", ", missing.Take(3))}");
+            }
         }
+
+        /// <summary>
+        /// Whether a file slskd refused to enqueue is already on its way under this same download, which
+        /// is what a grab repeated while the first one is still running looks like: slskd refuses the
+        /// files it is already transferring, and the transfers in flight deliver them to the same
+        /// destination. Anything else, a transfer for another grab or one started by hand, will never
+        /// reach this download.
+        /// </summary>
+        private bool IsInFlightFor(string filename, List<DirectoryFile> inFlight, string downloadId, SlskdSettings settings) =>
+            inFlight.Any(f => f.FileName == filename &&
+                              TryResolveDownloadId(f.BatchId, settings, out var id) &&
+                              id == downloadId);
+
+        /// <summary>
+        /// The downloads from a user that have not ended, which is what slskd checks a new enqueue against.
+        /// </summary>
+        private List<DirectoryFile> GetInFlightTransfers(string username, SlskdSettings settings) =>
+            ExecuteGet<List<DownloadsQueue>>(BuildRequest(settings, "/api/v0/transfers/downloads/"))?
+                .Where(q => q.Username == username)
+                .SelectMany(q => q.Directories ?? new List<DownloadDirectory>())
+                .SelectMany(d => d.Files ?? new List<DirectoryFile>())
+                .Where(f => !f.Removed && f.EndedAt == null)
+                .ToList() ?? new List<DirectoryFile>();
 
         /// <summary>
         /// Cancels transfers from batches that were accepted before a later one failed, so a release is
