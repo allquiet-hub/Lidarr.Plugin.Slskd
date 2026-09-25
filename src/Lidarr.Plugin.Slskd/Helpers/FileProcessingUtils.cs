@@ -11,7 +11,7 @@ namespace NzbDrone.Plugin.Slskd.Helpers;
 // Shared utility class for common logic
 public static class FileProcessingUtils
 {
-    public static readonly HashSet<string> ValidAudioExtensions = new HashSet<string>
+    public static readonly HashSet<string> ValidAudioExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         "flac", "alac", "wav", "ape", "ogg", "aac", "mp3", "wma", "m4a",
     };
@@ -81,20 +81,26 @@ public static class FileProcessingUtils
         "ARCHiVED_MUSiC", "ARCHiVED MUSiC"
     };
 
+    /// <summary>
+    /// Reads each file's extension from its name. The extension field of a search result is whatever
+    /// the peer's client chose to send, passed through untouched by Soulseek.NET and slskd: most
+    /// clients leave it empty, and one that fills it may do so in upper case or disagree with the
+    /// name, which is what the transfer actually delivers. The field is kept only for a name that
+    /// has no extension to read.
+    /// </summary>
     public static void EnsureFileExtensions<T>(List<T> files)
         where T : SlskdFile
     {
         foreach (var file in files)
         {
-            if (!string.IsNullOrEmpty(file.Extension))
-            {
-                continue;
-            }
-
             var lastDotIndex = file.Name.LastIndexOf('.');
-            if (lastDotIndex >= 0)
+            if (lastDotIndex >= 0 && lastDotIndex < file.Name.Length - 1)
             {
-                file.Extension = file.Name[(lastDotIndex + 1) ..].ToLower();
+                file.Extension = file.Name[(lastDotIndex + 1) ..].ToLowerInvariant();
+            }
+            else if (!string.IsNullOrEmpty(file.Extension))
+            {
+                file.Extension = file.Extension.TrimStart('.').ToLowerInvariant();
             }
         }
     }
