@@ -67,7 +67,14 @@ namespace NzbDrone.Core.HealthCheck.Checks
                 return new HealthCheck(GetType());
             }
 
-            return new HealthCheck(GetType(), HealthCheckResult.Warning, string.Join(". ", issues), "#slskd-configuration");
+            // Reasons are a closed enum of Lidarr's own checks, so none names slskd. Sorting is the
+            // nearest kin: a setting that is legitimate on the client's side and still breaks the
+            // import on Lidarr's.
+            return new HealthCheck(GetType(),
+                HealthCheckResult.Warning,
+                HealthCheckReason.DownloadClientSorting,
+                string.Join(". ", issues),
+                "#slskd-configuration");
         }
     }
 }
