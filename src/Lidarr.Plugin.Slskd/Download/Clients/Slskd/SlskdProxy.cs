@@ -323,65 +323,6 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             DeleteDownloadDirectory($"{DestinationRoot}/{downloadId}", settings);
         }
 
-        /// <summary>
-        /// Fetches the raw YAML configuration file. Requires an API key with the administrator role and
-        /// 'remote_configuration' enabled in slskd; both are reported as an authorization error.
-        /// </summary>
-        public string GetOptionsYaml(SlskdSettings settings)
-        {
-            var content = _httpClient.Get(BuildRequest(settings, "/api/v0/options/yaml").Build()).Content;
-
-            // The endpoint serves the file as a JSON-encoded string
-            return content?.TrimStart().StartsWith('"') == true
-                ? Newtonsoft.Json.JsonConvert.DeserializeObject<string>(content)
-                : content;
-        }
-
-        /// <summary>
-        /// Asks slskd itself whether the YAML parses into a valid configuration, returning its error
-        /// text or null when valid. Anything written with SaveOptionsYaml must pass through here first:
-        /// the file is hand-maintained and an unparseable write would take the whole instance down on
-        /// its next restart.
-        /// </summary>
-        public string ValidateOptionsYaml(string yaml, SlskdSettings settings)
-        {
-            try
-            {
-                Execute(BuildRequest(settings, "/api/v0/options/yaml/validate").Post(), yaml.ToJson());
-                return null;
-            }
-            catch (HttpException httpException) when (httpException.Response?.StatusCode == HttpStatusCode.BadRequest)
-            {
-                return httpException.Response.Content ?? "slskd rejected the configuration";
-            }
-        }
-
-        public void SaveOptionsYaml(string yaml, SlskdSettings settings)
-        {
-            var request = BuildRequest(settings, "/api/v0/options/yaml").Build();
-            request.Method = HttpMethod.Put;
-            request.Headers.ContentType = "application/json";
-            request.SetContent(yaml.ToJson());
-            _httpClient.Execute(request);
-        }
-
-        public int CountActiveDownloads(SlskdSettings settings)
-        {
-            var queues = ExecuteGet<List<DownloadsQueue>>(BuildRequest(settings, "/api/v0/transfers/downloads/"));
-
-            return queues?
-                .SelectMany(q => q.Directories)
-                .SelectMany(d => d.Files)
-                .Count(f => !f.Removed && f.TransferState?.State != TransferStates.Completed) ?? 0;
-        }
-
-        public void Restart(SlskdSettings settings)
-        {
-            var request = BuildRequest(settings, "/api/v0/application/").Build();
-            request.Method = HttpMethod.Put;
-            _httpClient.Execute(request);
-        }
-
         // Download Helpers
 
         /// <summary>

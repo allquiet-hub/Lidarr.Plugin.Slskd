@@ -59,7 +59,7 @@ namespace NzbDrone.Core.HealthCheck.Checks
                     continue;
                 }
 
-                issues.AddRange(Plugin.Slskd.Helpers.SlskdConfigIssues.Find(options).Select(i => i.Description));
+                issues.AddRange(Plugin.Slskd.Helpers.SlskdConfigIssues.Find(options));
             }
 
             if (issues.Empty())

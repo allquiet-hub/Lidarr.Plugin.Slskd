@@ -7,34 +7,14 @@ using NzbDrone.Plugin.Slskd.Models;
 namespace NzbDrone.Plugin.Slskd.Helpers;
 
 /// <summary>
-/// An slskd setting whose current value breaks or degrades the integration, together with where it
-/// lives in the YAML configuration and the value that repairs it.
-/// </summary>
-public class SlskdConfigIssue
-{
-    public SlskdConfigIssue(string shortName, string description, string[] yamlPath, string desiredValue)
-    {
-        ShortName = shortName;
-        Description = description;
-        YamlPath = yamlPath;
-        DesiredValue = desiredValue;
-    }
-
-    public string ShortName { get; }
-    public string Description { get; }
-    public string[] YamlPath { get; }
-    public string DesiredValue { get; }
-}
-
-/// <summary>
-/// The single authority on which slskd settings count as broken, shared by the health check that
-/// warns about them and the Test repair that rewrites them, so the two can never disagree.
+/// The single authority on which slskd settings count as broken, shared by the health check and the
+/// download client's Test so that the two can never disagree.
 /// </summary>
 public static class SlskdConfigIssues
 {
-    public static List<SlskdConfigIssue> Find(SlskdOptions options)
+    public static List<string> Find(SlskdOptions options)
     {
-        var issues = new List<SlskdConfigIssue>();
+        var issues = new List<string>();
 
         if (options == null)
         {
@@ -44,23 +24,15 @@ public static class SlskdConfigIssues
         var mode = options.Transfers?.Download?.Destination?.Permissions?.Mode;
         if (HasNoExecuteBit(mode))
         {
-            issues.Add(new SlskdConfigIssue(
-                "permissions.mode",
-                $"slskd applies permission mode {mode} to completed download folders as well as files, " +
+            issues.Add($"slskd applies permission mode {mode} to completed download folders as well as files, " +
                 "which leaves them untraversable; set 'transfers.download.destination.permissions.mode' " +
-                "to 777 (no effect if slskd runs on Windows)",
-                new[] { "transfers", "download", "destination", "permissions", "mode" },
-                "777"));
+                "to 777 (no effect if slskd runs on Windows)");
         }
 
         if (!options.RemoteFileManagement)
         {
-            issues.Add(new SlskdConfigIssue(
-                "remote_file_management",
-                "slskd has 'remote_file_management' disabled, so Lidarr cannot delete completed " +
-                "downloads after importing them and they will accumulate",
-                new[] { "remote_file_management" },
-                "true"));
+            issues.Add("slskd has 'remote_file_management' disabled, so Lidarr cannot delete completed " +
+                "downloads after importing them and they will accumulate");
         }
 
         return issues;

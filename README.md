@@ -35,7 +35,6 @@ the `readwrite` role.
 | Use SSL | Only if slskd serves HTTPS |
 | Url Base | Only if slskd sits behind a reverse proxy on a sub-path |
 | API Key | An slskd API key with the `readwrite` role |
-| Fix slskd Config on Test | Off by default. When Test finds slskd settings that break the integration, rewrites slskd's config file — the edit is validated by slskd itself before being saved, and everything else in the file is left untouched — and restarts slskd if the change needs it. The restart is skipped while downloads are active; Test then says to restart manually or try again when the queue is idle. Needs an `administrator` API key and `remote_configuration: true` in slskd. |
 
 **Test** fails if slskd is older than 0.26.0 and tells you to upgrade.
 
@@ -154,8 +153,9 @@ legitimate configuration.
   downloads are genuinely saturating your line or your disk. Slot changes need an slskd restart,
   speed limits do not.
 
-The first two are raised as Lidarr health warnings, and the download client's **Fix slskd Config on
-Test** option can correct them for you.
+The first two are raised as Lidarr health warnings, and the download client's Test reports them too.
+They have to be changed in slskd's own configuration: slskd lets only a signed-in web session edit
+its configuration file, never an API key.
 
 ## Known issues
 
