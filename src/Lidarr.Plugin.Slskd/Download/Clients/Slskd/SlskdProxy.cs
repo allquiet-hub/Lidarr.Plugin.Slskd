@@ -86,6 +86,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
             var completedDownloadsPath = new OsPath(GetOptions(settings).Directories.Downloads);
 
             var groups = new Dictionary<string, QueueGroup>(StringComparer.Ordinal);
+            var allBatchesResolved = true;
 
             foreach (var queue in downloadsQueues)
             {
@@ -110,6 +111,7 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                             // reads to Lidarr as the tracked download vanishing and a foreign one
                             // appearing. Leaving them out for one poll is invisible in comparison.
                             _logger.Debug($"Batch '{batch.Key}' could not be resolved, leaving its files out of this queue poll");
+                            allBatchesResolved = false;
                             continue;
                         }
 
@@ -197,7 +199,69 @@ namespace NzbDrone.Core.Download.Clients.Slskd
                 items.Add(downloadClientItem);
             }
 
+            // A grab whose transfers slskd no longer lists - cleared by hand, or expired through its
+            // transfer retention - still has its files in its own folder, where slskd moves a file only
+            // once it is complete. Reported from the folder, it stays in Lidarr's queue to be imported,
+            // by hand if need be, and then removed; left out, Lidarr stops tracking it without failing
+            // it, and the folder is never cleaned up. A poll that could not resolve every batch skips
+            // this, since a download still in progress could then pass for one of these.
+            if (allBatchesResolved)
+            {
+                items.AddRange(GetUnlistedDownloads(settings, completedDownloadsPath, groups.Keys));
+            }
+
             return items;
+        }
+
+        /// <summary>
+        /// The downloads under the plugin's folder that no transfer in the queue accounts for, one per
+        /// download id, reported as completed. Only folders holding audio are reported, so that a
+        /// folder emptied by a move import is not offered to Lidarr again.
+        /// </summary>
+        private List<DownloadClientItem> GetUnlistedDownloads(SlskdSettings settings, OsPath completedDownloadsPath, ICollection<string> listed)
+        {
+            FilesystemDirectory listing;
+
+            try
+            {
+                listing = ExecuteGet<FilesystemDirectory>(
+                    BuildRequest(settings, $"/api/v0/files/downloads/directories/{Uri.EscapeDataString(FileProcessingUtils.Base64Encode(DestinationRoot))}/")
+                        .AddQueryParam("recursive", true));
+            }
+            catch (HttpException httpException)
+            {
+                // Not found until the first grab completes; anything else leaves this poll as it was
+                if (httpException.Response?.StatusCode != HttpStatusCode.NotFound)
+                {
+                    _logger.Debug($"Could not list the '{DestinationRoot}' downloads folder: {httpException.Message}");
+                }
+
+                return new List<DownloadClientItem>();
+            }
+
+            return (listing?.Files ?? new List<FilesystemFile>())
+                .Select(file => (Segments: file.FullName?.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries) ?? Array.Empty<string>(), file.Length))
+                .Where(file => file.Segments.Length >= 3 && !listed.Contains(file.Segments[0]))
+                .GroupBy(file => file.Segments[0], StringComparer.Ordinal)
+                .Where(download => download.Any(file => IsAudioFile(file.Segments[^1])))
+                .Select(download => new DownloadClientItem
+                {
+                    DownloadId = download.Key,
+                    Title = download.First().Segments[1],
+                    TotalSize = download.Sum(file => file.Length),
+                    RemainingSize = 0,
+                    Status = DownloadItemStatus.Completed,
+                    OutputPath = completedDownloadsPath + DestinationRoot + download.Key,
+                    CanBeRemoved = true,
+                    CanMoveFiles = true,
+                })
+                .ToList();
+        }
+
+        private static bool IsAudioFile(string name)
+        {
+            var dot = name.LastIndexOf('.');
+            return dot >= 0 && FileProcessingUtils.ValidAudioExtensions.Contains(name[(dot + 1) ..]);
         }
 
         public string Download(string searchId, string username, string downloadPath, string identifier, string albumTitle, SlskdSettings settings)
