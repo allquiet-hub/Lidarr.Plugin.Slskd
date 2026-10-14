@@ -92,9 +92,11 @@ empty:
    answer for. Skipped for one-word titles and for singles, whose title is a song's: both return
    thousands of unrelated folders. A result of this step whose path never names the artist is
    rejected, and stays grabbable by hand
-3. one artist alias, if MusicBrainz lists a usable one
+3. for an artist whose name is not written in the Latin alphabet, its Latin alias from MusicBrainz
+   (`宝鐘マリン` is also searched as `Marine Houshou`). Other aliases are never searched: legal
+   names, nicknames and misspellings are names no folder carries
 
-An album therefore costs one to four searches. The Soulseek server disconnects accounts that search
+An album therefore costs one to three searches, four only for an artist named in another alphabet. The Soulseek server disconnects accounts that search
 too heavily, and neither the threshold nor the ban length is published. Lidarr's scheduled searches
 are spread thin enough not to matter; repeatedly searching long lists of missing albums by hand is
 what gets you there.

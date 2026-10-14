@@ -91,6 +91,8 @@ namespace NzbDrone.Core.Indexers.Slskd
         private static readonly Regex QualifierPattern = new (@"[\(\[\{][^\)\]\}]*[\)\]\}]", RegexOptions.Compiled);
         private static readonly Regex WhitespacePattern = new (@"\s+", RegexOptions.Compiled);
         private static readonly Regex LeadingDashPattern = new (@"(?<![^\s])-+(?=\S)", RegexOptions.Compiled);
+        private static readonly Regex TypographicDashPattern = new ("[‐-―−]", RegexOptions.Compiled);
+        private static readonly Regex TypographicApostrophePattern = new ("[‘’ʼ]", RegexOptions.Compiled);
 
         private static HttpRequestBuilder CreateRequestBuilder(SlskdIndexerSettings settings) =>
             new HttpRequestBuilder(settings.BaseUrl)
@@ -268,18 +270,25 @@ namespace NzbDrone.Core.Indexers.Slskd
                 }
             }
 
-            // One alias, not all of them. An artist known internationally carries a name per writing
-            // system, and searching each one costs a query for an audience the Soulseek network does
-            // not have: a query in a script nobody names their folders in returns nothing, while the
-            // count of searches is what the server bans an account over.
-            if (!isVariousArtist)
+            // One alias, and only for an artist whose own name is not written in the Latin alphabet,
+            // which is the alphabet the Soulseek network names its folders in: there the Latin form
+            // is the name folders actually carry. For any other artist the aliases MusicBrainz lists
+            // are names no folder carries - legal names, nicknames, misspellings kept as search hints,
+            // the same name in other scripts - and across a library of 166 artists the alias picked
+            // without this rule was one of those for 57 of the 59 artists that had one. Every such
+            // query is a search spent on an album already not found, which is exactly the album a
+            // repeated search keeps coming back to.
+            if (!isVariousArtist && !IsLatin(searchCriteria.Artist.Name))
             {
+                // An alias spelled without diacritics first, since romanised folder names mostly
+                // drop them ("Marine Houshou" rather than "Marine Hōshō")
                 var alias = searchCriteria.Artist.Metadata.Value.Aliases
-                    .FirstOrDefault(a => !a.IsNullOrWhiteSpace() &&
-                                         a.Trim().Length >= MinimumAliasLength &&
-                                         !a.Equals(searchCriteria.Artist.Name, StringComparison.OrdinalIgnoreCase));
+                    .Select(NormalizePunctuation)
+                    .Where(a => a.Length >= MinimumAliasLength && IsLatin(a))
+                    .OrderBy(a => a.Any(c => c > '\u007F'))
+                    .FirstOrDefault();
 
-                var query = alias == null ? null : Normalize($"{CollapseWhitespace(alias)} {album}", seen);
+                var query = alias == null ? null : Normalize($"{alias} {album}", seen);
                 if (query != null)
                 {
                     yield return new QueryTier(new[] { query }, omitsArtist: false);
@@ -289,6 +298,23 @@ namespace NzbDrone.Core.Indexers.Slskd
 
         private static bool IsSingle(Core.Music.Album album) =>
             string.Equals(album?.AlbumType, "Single", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Whether a name is written in the Latin alphabet, accented letters included. A name with no
+        /// letters at all does not count, being as unsearchable by its own name as one in another script.
+        /// </summary>
+        private static bool IsLatin(string value) =>
+            !value.IsNullOrWhiteSpace() &&
+            value.Any(char.IsLetter) &&
+            value.All(c => !char.IsLetter(c) || c <= 'ɏ' || (c >= 'Ḁ' && c <= 'ỿ'));
+
+        /// <summary>
+        /// MusicBrainz writes hyphens and apostrophes in their typographic forms ("K‐Dot", "O’Connor"),
+        /// which a folder name almost never contains, so a term spelled that way matches nothing.
+        /// </summary>
+        private static string NormalizePunctuation(string value) =>
+            CollapseWhitespace(TypographicDashPattern.Replace(
+                TypographicApostrophePattern.Replace(value ?? string.Empty, "'"), "-"));
 
         private static string CollapseWhitespace(string value) =>
             value.IsNullOrWhiteSpace() ? string.Empty : WhitespacePattern.Replace(value, " ").Trim();
