@@ -117,12 +117,15 @@ jobs:
           # since pushing to main repeatedly before publishing is the normal way to work. They are
           # found by filtering the release list on tag_name: a draft owns no git tag yet, so any
           # tag-based lookup resolves it unreliably — including gh release view, which is what makes
-          # its isDraft answer untrustworthy here. A release that is already published is never
-          # touched: reaching it means the version was not bumped, and the build should say so
-          # instead of quietly replacing something users can see.
-          gh api "repos/${{ github.repository }}/releases?per_page=100" \
-            --jq ".[] | select(.tag_name == \"$TAG\") | \"\(.id) \(.draft)\"" |
+          # its isDraft answer untrustworthy here. The list is read into a variable before looping,
+          # so that a failing API call still fails the step and the loop runs in this shell, where
+          # what it finds can decide what happens next.
+          releases=$(gh api "repos/${{ github.repository }}/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$TAG\") | \"\(.id) \(.draft)\"")
+
+          published=false
           while read -r id draft; do
+            [ -n "$id" ] || continue
             if [ "$draft" = "true" ]; then
               echo "Replacing stale draft $id"
               gh api -X DELETE "repos/${{ github.repository }}/releases/$id"
@@ -133,10 +136,18 @@ jobs:
               echo "Replacing tagless release $id left by a failed publish"
               gh api -X DELETE "repos/${{ github.repository }}/releases/$id"
             else
-              echo "::error::$TAG is already published. Bump PLUGIN_VERSION before pushing."
-              exit 1
+              published=true
             fi
-          done
+          done <<< "$releases"
+
+          # A published release is never touched. Reaching one means this push carries no new
+          # version, which is how documentation and other unreleased changes land on main, so it
+          # releases nothing and says so as a warning on the run rather than failing it. A forgotten
+          # bump on a code change shows up through the same warning.
+          if [ "$published" = "true" ]; then
+            echo "::warning::$TAG is already published, so this push releases nothing. Bump PLUGIN_VERSION to release it."
+            exit 0
+          fi
 
           # --target names a branch rather than a sha on purpose: Lidarr only offers an update when
           # the release points at a branch called main or master, a sha reads to it as an unknown
