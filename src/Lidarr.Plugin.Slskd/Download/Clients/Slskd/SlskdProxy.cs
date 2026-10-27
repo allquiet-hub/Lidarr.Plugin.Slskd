@@ -224,17 +224,26 @@ namespace NzbDrone.Core.Download.Clients.Slskd
 
             try
             {
-                listing = ExecuteGet<FilesystemDirectory>(
-                    BuildRequest(settings, $"/api/v0/files/downloads/directories/{Uri.EscapeDataString(FileProcessingUtils.Base64Encode(DestinationRoot))}/")
-                        .AddQueryParam("recursive", true));
+                var request = BuildRequest(settings, $"/api/v0/files/downloads/directories/{Uri.EscapeDataString(FileProcessingUtils.Base64Encode(DestinationRoot))}/")
+                    .AddQueryParam("recursive", true);
+
+                // The folder does not exist until the first download completes, so until then every
+                // poll gets a 404. Expected rather than an error: left to the HTTP client it is logged
+                // as a warning once a minute, which reads as the cause of whatever else is going wrong.
+                request.SuppressHttpErrorStatusCodes = new[] { HttpStatusCode.NotFound };
+
+                var response = _httpClient.Get(request.Build());
+                if (response.StatusCode == HttpStatusCode.NotFound)
+                {
+                    return new List<DownloadClientItem>();
+                }
+
+                listing = Json.Deserialize<FilesystemDirectory>(response.Content);
             }
             catch (HttpException httpException)
             {
-                // Not found until the first grab completes; anything else leaves this poll as it was
-                if (httpException.Response?.StatusCode != HttpStatusCode.NotFound)
-                {
-                    _logger.Debug($"Could not list the '{DestinationRoot}' downloads folder: {httpException.Message}");
-                }
+                // Anything else leaves this poll as it was
+                _logger.Debug($"Could not list the '{DestinationRoot}' downloads folder: {httpException.Message}");
 
                 return new List<DownloadClientItem>();
             }
