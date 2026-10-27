@@ -16,6 +16,12 @@ other does nothing.
 A working slskd instance with a Soulseek account already configured, and an slskd **API key** with
 the `readwrite` role.
 
+**slskd 0.26.2 needs an `administrator` key.** That release restricted the options endpoint, which
+the plugin reads to find slskd's downloads folder, to administrators: with a `readwrite` key searches
+and grabs still work, but Lidarr never sees a download complete. slskd has already reverted this for
+its next release; until then, use an `administrator` key on 0.26.2 or stay on 0.26.1. Keep
+authentication enabled either way.
+
 ## Installation
 
 1. In Lidarr, go to **System > Plugins**.
@@ -55,6 +61,14 @@ settings listed under [slskd settings worth checking](#slskd-settings-worth-chec
 | Verify Track Durations | on | Rejects folders whose file durations fit no edition of the album |
 | External URL | empty | slskd URL used only for the links in interactive search, for setups where the URL above is internal-only (e.g. a Docker service name) |
 | Artist Search Album Limit | `20` | How many albums a search started from an artist page may look for, newest first. Only albums still missing tracks count. `0` searches them all |
+
+### 3. Delay profiles
+
+**Settings > Profiles > Delay Profiles**: enable **Slskd** in every profile you use. On a Lidarr that
+already has delay profiles, the plugin's protocol is added to them **disabled**, and automatic grabs
+are refused with `SlskdDownloadProtocol is not enabled for this artist`.
+
+### What the indexer rejects
 
 Three checks keep unsuitable folders out of automatic grabs:
 
