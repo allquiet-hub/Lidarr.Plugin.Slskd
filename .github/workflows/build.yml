@@ -25,14 +25,16 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: true
   PLUGIN_NAME: Lidarr.Plugin.Slskd
   PLUGIN_VERSION: 1.1.7.0
-  # The oldest Lidarr the net8.0 build supports. Lidarr 3.x reads it from the release notes; the net10.0 build's
-  # minimum is set per build below.
+  # The oldest Lidarr each build supports. Each framework gets its own release, and Lidarr's PluginService reads
+  # "Minimum Lidarr Version:" from that release's notes and skips it on an older Lidarr. One release with both zips
+  # could only state one minimum. Keep these in step with minimum_lidarr in the build matrix.
   MINIMUM_LIDARR_VERSION: 3.1.5.5066
+  MINIMUM_LIDARR_VERSION_NET10: 4.0.0.5222
 
 jobs:
   build:
     # Lidarr installs the release asset named for its own .NET version (Lidarr.Plugin.Slskd.net8.0.zip on Lidarr 3.x,
-    # .net10.0.zip on Lidarr 4.x), so every release carries both. Each build compiles against the matching Lidarr source.
+    # .net10.0.zip on Lidarr 4.x). Each build compiles against the matching Lidarr source and gets its own release.
     # The explicit name keeps the check called "build (net8.0)" as before; with include entries the matrix would
     # otherwise name the job after every value.
     name: build (${{ matrix.framework }})
@@ -107,83 +109,105 @@ jobs:
           pattern: net*
           merge-multiple: true
       - name: Compose release notes
+        # One set of notes per framework, because the "Minimum Lidarr Version" line differs. The previous release is the
+        # newest plain v* tag: the net10.0 release's "-net10.0" tag is left out so both diff against the same base.
         run: |
-          previous=$(git for-each-ref --sort=-v:refname --count=1 --format='%(refname:short)' 'refs/tags/v*')
-          {
-            echo "Adds Slskd (Soulseek) to Lidarr as both an indexer and a download client. Both have"
-            echo "to be added in Lidarr; see the [readme](https://github.com/${{ github.repository }}#readme) for setup."
-            echo
-            echo "Requires Lidarr \`nightly\` and slskd 0.26.0 or newer."
-            echo
-            echo "Lidarr 3.x installs the net8.0 build and Lidarr 4.x the net10.0 build (4.0.0.5222 or newer)."
-            echo
-            # Parsed out of this body by Lidarr's PluginService to decide whether the release may
-            # be offered, so the wording of this line is load bearing.
-            echo "Minimum Lidarr Version: ${{ env.MINIMUM_LIDARR_VERSION }}"
-            echo
-            if [ -n "$previous" ]; then
-              echo "### Changes since $previous"
-              echo
-              git log --no-merges --pretty=format:'- %s (`%h`)' "$previous..HEAD"
-              echo
-              echo
-              echo "[Full changelog](https://github.com/${{ github.repository }}/compare/$previous...v${{ env.PLUGIN_VERSION }})"
+          previous=$(git for-each-ref --sort=-v:refname --format='%(refname:short)' 'refs/tags/v*' | grep -v -- '-net' | head -n 1)
+          for fw in net8.0 net10.0; do
+            if [ "$fw" = net8.0 ]; then
+              minimum=${{ env.MINIMUM_LIDARR_VERSION }}
+              lidarr="Lidarr 3.x"
+              tag=v${{ env.PLUGIN_VERSION }}
             else
-              echo "### Changes"
-              echo
-              git log --no-merges --pretty=format:'- %s (`%h`)'
-              echo
+              minimum=${{ env.MINIMUM_LIDARR_VERSION_NET10 }}
+              lidarr="Lidarr 4.x"
+              tag=v${{ env.PLUGIN_VERSION }}-net10.0
             fi
-          } > release-notes.md
-      - name: Create release
+            {
+              echo "Adds Slskd (Soulseek) to Lidarr as both an indexer and a download client. Both have"
+              echo "to be added in Lidarr; see the [readme](https://github.com/${{ github.repository }}#readme) for setup."
+              echo
+              echo "This is the $fw build for $lidarr. Requires slskd 0.26.0 or newer."
+              echo
+              # Parsed out of this body by Lidarr's PluginService to decide whether the release may
+              # be offered, so the wording of this line is load bearing.
+              echo "Minimum Lidarr Version: $minimum"
+              echo
+              if [ -n "$previous" ]; then
+                echo "### Changes since $previous"
+                echo
+                git log --no-merges --pretty=format:'- %s (`%h`)' "$previous..HEAD"
+                echo
+                echo
+                echo "[Full changelog](https://github.com/${{ github.repository }}/compare/$previous...$tag)"
+              else
+                echo "### Changes"
+                echo
+                git log --no-merges --pretty=format:'- %s (`%h`)'
+                echo
+              fi
+            } > "release-notes.$fw.md"
+          done
+      - name: Create releases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: v${{ env.PLUGIN_VERSION }}
         run: |
-          # Drafts left by earlier pushes of this same version are replaced rather than duplicated,
-          # since pushing to main repeatedly before publishing is the normal way to work. They are
-          # found by filtering the release list on tag_name: a draft owns no git tag yet, so any
-          # tag-based lookup resolves it unreliably — including gh release view, which is what makes
-          # its isDraft answer untrustworthy here. The list is read into a variable before looping,
-          # so that a failing API call still fails the step and the loop runs in this shell, where
-          # what it finds can decide what happens next.
-          releases=$(gh api "repos/${{ github.repository }}/releases?per_page=100" \
-            --jq ".[] | select(.tag_name == \"$TAG\") | \"\(.id) \(.draft)\"")
-
-          published=false
-          while read -r id draft; do
-            [ -n "$id" ] || continue
-            if [ "$draft" = "true" ]; then
-              echo "Replacing stale draft $id"
-              gh api -X DELETE "repos/${{ github.repository }}/releases/$id"
-            elif ! gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --silent 2>/dev/null; then
-              # Published in name only: a release whose tag was never created is the remnant of a
-              # create or publish that failed halfway, and without a tag no user can ever have seen
-              # or installed it. A release that truly went out always owns its tag.
-              echo "Replacing tagless release $id left by a failed publish"
-              gh api -X DELETE "repos/${{ github.repository }}/releases/$id"
+          # One draft per framework: v<version> with the net8.0 zip for Lidarr 3.x, and v<version>-net10.0 with the
+          # net10.0 zip for Lidarr 4.x. Lidarr reads "1.1.7.0-net10.0" as version 1.1.7.0 with the suffix net10.0,
+          # which ranks just below a plain 1.1.7.0, so an installed 1.1.7.0 shows no false update and 1.1.7.1 still does.
+          for fw in net8.0 net10.0; do
+            if [ "$fw" = net8.0 ]; then
+              TAG=v${{ env.PLUGIN_VERSION }}
+              title="Slskd Plugin (Lidarr 3.x)"
             else
-              published=true
+              TAG=v${{ env.PLUGIN_VERSION }}-net10.0
+              title="Slskd Plugin (Lidarr 4.x)"
             fi
-          done <<< "$releases"
 
-          # A published release is never touched. Reaching one means this push carries no new
-          # version, which is how documentation and other unreleased changes land on main, so it
-          # releases nothing and says so as a warning on the run rather than failing it. A forgotten
-          # bump on a code change shows up through the same warning.
-          if [ "$published" = "true" ]; then
-            echo "::warning::$TAG is already published, so this push releases nothing. Bump PLUGIN_VERSION to release it."
-            exit 0
-          fi
+            # Drafts left by earlier pushes of this same version are replaced rather than duplicated,
+            # since pushing to main repeatedly before publishing is the normal way to work. They are
+            # found by filtering the release list on tag_name: a draft owns no git tag yet, so any
+            # tag-based lookup resolves it unreliably, including gh release view, which is what makes
+            # its isDraft answer untrustworthy here. The list is read into a variable before looping,
+            # so that a failing API call still fails the step and the loop runs in this shell, where
+            # what it finds can decide what happens next.
+            releases=$(gh api "repos/${{ github.repository }}/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"$TAG\") | \"\(.id) \(.draft)\"")
 
-          # --target names a branch rather than a sha on purpose: Lidarr only offers an update when
-          # the release points at a branch called main or master, a sha reads to it as an unknown
-          # tree, and GitHub degrades a sha back into the raw value once history moves past it.
-          gh release create "$TAG" \
-            --target "$GITHUB_REF_NAME" \
-            --title "Slskd Plugin" \
-            --notes-file release-notes.md \
-            --draft \
-            --prerelease \
-            "$PLUGIN_NAME.net8.0.zip" \
-            "$PLUGIN_NAME.net10.0.zip"
+            published=false
+            while read -r id draft; do
+              [ -n "$id" ] || continue
+              if [ "$draft" = "true" ]; then
+                echo "Replacing stale draft $id"
+                gh api -X DELETE "repos/${{ github.repository }}/releases/$id"
+              elif ! gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --silent 2>/dev/null; then
+                # Published in name only: a release whose tag was never created is the remnant of a
+                # create or publish that failed halfway, and without a tag no user can ever have seen
+                # or installed it. A release that truly went out always owns its tag.
+                echo "Replacing tagless release $id left by a failed publish"
+                gh api -X DELETE "repos/${{ github.repository }}/releases/$id"
+              else
+                published=true
+              fi
+            done <<< "$releases"
+
+            # A published release is never touched. Reaching one means this push carries no new
+            # version, which is how documentation and other unreleased changes land on main, so it
+            # releases nothing and says so as a warning on the run rather than failing it. A forgotten
+            # bump on a code change shows up through the same warning.
+            if [ "$published" = "true" ]; then
+              echo "::warning::$TAG is already published, so this push releases nothing for $fw. Bump PLUGIN_VERSION to release it."
+              continue
+            fi
+
+            # --target names a branch rather than a sha on purpose: Lidarr only offers an update when
+            # the release points at a branch called main or master, a sha reads to it as an unknown
+            # tree, and GitHub degrades a sha back into the raw value once history moves past it.
+            gh release create "$TAG" \
+              --target "$GITHUB_REF_NAME" \
+              --title "$title" \
+              --notes-file "release-notes.$fw.md" \
+              --draft \
+              --prerelease \
+              "$PLUGIN_NAME.$fw.zip"
+          done
