@@ -10,7 +10,7 @@ other does nothing.
 
 | | Version | Why |
 |---|---|---|
-| Lidarr | `nightly`, 3.1.5.5066 or newer | Plugin support is not in the stable channel. Use `lscr.io/linuxserver/lidarr:nightly`. From plugin 1.1.5.0, older builds cannot load it. |
+| Lidarr | `nightly`: 3.1.5.5066 or newer on 3.x, 4.0.0.5222 or newer on 4.x | Plugin support is not in the stable channel. Use `lscr.io/linuxserver/lidarr:nightly`. From plugin 1.1.5.0, older builds cannot load it. Each release has a build for both, and Lidarr installs the one for its .NET version. |
 | slskd | 0.26.0 or newer | Both the indexer and the download client refuse to start on anything older — see [slskd version](#slskd-version). |
 
 A working slskd instance with a Soulseek account already configured, and an slskd **API key** with
